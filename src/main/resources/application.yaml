@@ -34,6 +34,9 @@ info:
 app:
   security:
     jwt-signing-key: ${JWT_SIGNING_KEY}
+    credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY}
   bootstrap:
     admin-username: ${BOOTSTRAP_ADMIN_USERNAME:}
     admin-password: ${BOOTSTRAP_ADMIN_PASSWORD:}
+  worker:
+    poll-delay-ms: ${WORKER_POLL_DELAY_MS:500}

@@ -30,8 +30,26 @@
   Flyway startup, registration privilege boundaries, password hashing and
   login, owner isolation, role authorization, and audit events. Live HTTP checks
   also verified cross-owner 404 behavior and administrative RBAC.
-- **Limitations:** No instance creation or worker flow exists yet. The default
-  PostgreSQL 17.6 Testcontainers path was not exercised because the Docker
-  Desktop engine is stopped.
-- **Next:** Milestone 2 — asynchronous Docker-backed provisioning. This requires
-  a running Docker engine for the mandated integration verification.
+- **Limitations at completion:** Instance creation and worker processing were
+  added in Milestone 2.
+- **Next:** Milestone 2 — asynchronous Docker-backed provisioning.
+
+## Milestone 2 — Asynchronous Docker-backed provisioning
+
+- **Status:** Implemented and validated against Docker Engine 29.9.2.
+- **Completed:** Authenticated instance creation returns HTTP 202 and creates a
+  durable queued operation. A scheduled worker claims queued operations with
+  PostgreSQL `FOR UPDATE SKIP LOCKED`, decrypts the AES-256-GCM-protected
+  database password, and provisions a labeled PostgreSQL 17.6 container with a
+  named data volume and a host port bound to localhost. The worker verifies
+  readiness over JDBC and records the instance and operation results.
+- **Validation:** `.\mvnw.cmd -B test` passed with all 9 tests executed (0
+  failures, 0 errors, 0 skipped), including a live Docker-backed provisioning
+  test that verifies operation completion, Docker ownership labels, the
+  persistent volume mount, password secrecy in API/metadata, and a real
+  database connection with read/write verification.
+- **Limitations:** Lifecycle operations and explicit data deletion,
+  idempotency, job leases/retries/recovery/reconciliation, and backup/restore
+  are deferred to later milestones.
+- **Next:** Milestone 3 — instance lifecycle operations and explicit
+  persistent-data deletion.

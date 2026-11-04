@@ -4,6 +4,7 @@ import com.tejas.postgresinstancemanager.users.InvalidCredentialsException;
 import com.tejas.postgresinstancemanager.users.LastAdministratorException;
 import com.tejas.postgresinstancemanager.users.SelfRoleChangeException;
 import com.tejas.postgresinstancemanager.users.UsernameAlreadyExistsException;
+import com.tejas.postgresinstancemanager.instances.InstanceNameAlreadyExistsException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -39,6 +40,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(UsernameAlreadyExistsException.class)
     ResponseEntity<ProblemDetail> handleDuplicateUsername() {
         return response(HttpStatus.CONFLICT, "Conflict", "The username is already in use.");
+    }
+
+    @ExceptionHandler(InstanceNameAlreadyExistsException.class)
+    ResponseEntity<ProblemDetail> handleDuplicateInstanceName() {
+        return response(HttpStatus.CONFLICT, "Conflict", "An instance with this name already exists for the owner.");
     }
 
     @ExceptionHandler(InvalidCredentialsException.class)

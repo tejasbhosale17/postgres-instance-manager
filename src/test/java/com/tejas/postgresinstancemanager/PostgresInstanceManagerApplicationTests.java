@@ -8,7 +8,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,6 +20,8 @@ class PostgresInstanceManagerApplicationTests {
     static void configureDatabase(DynamicPropertyRegistry registry) {
         TestPostgres.configure(registry, POSTGRES);
         registry.add("app.security.jwt-signing-key",
+                () -> "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=");
+        registry.add("app.security.credential-encryption-key",
                 () -> "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=");
     }
 

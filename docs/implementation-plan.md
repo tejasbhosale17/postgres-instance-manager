@@ -16,7 +16,7 @@ metadata database on localhost for trusted local development only.
   configuration, and architecture documentation; verify application startup.
 - [x] 1. Add authentication, ownership-aware metadata APIs, validation, errors,
   and authorization tests.
-- [ ] 2. Add durable asynchronous provisioning, Docker integration, readiness
+- [x] 2. Add durable asynchronous provisioning, Docker integration, readiness
   checks, persistent volumes, and a working create flow.
 - [ ] 3. Add instance lifecycle operations and explicit persistent-data deletion.
 - [ ] 4. Add idempotency, concurrent claims, leases, bounded retries, recovery,

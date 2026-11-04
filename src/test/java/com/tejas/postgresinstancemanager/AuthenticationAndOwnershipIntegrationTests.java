@@ -40,6 +40,7 @@ class AuthenticationAndOwnershipIntegrationTests {
     static void configureDatabase(DynamicPropertyRegistry registry) {
         TestPostgres.configure(registry, POSTGRES);
         registry.add("app.security.jwt-signing-key", () -> TEST_SIGNING_KEY);
+        registry.add("app.security.credential-encryption-key", () -> TEST_SIGNING_KEY);
         registry.add("app.bootstrap.admin-username", () -> "integration-admin");
         registry.add("app.bootstrap.admin-password", () -> ADMIN_PASSWORD);
     }

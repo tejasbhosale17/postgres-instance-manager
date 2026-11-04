@@ -1,8 +1,8 @@
 # PostgreSQL Instance Management Platform
 
 A local development control plane for managing isolated PostgreSQL instances.
-The current implementation provides authenticated user and metadata APIs; Docker
-provisioning and lifecycle operations are planned for later milestones.
+The platform provides authenticated metadata APIs and asynchronous
+Docker-backed PostgreSQL provisioning.
 
 ## Local development
 
@@ -10,8 +10,9 @@ Requirements: Java 21 and Docker with the Compose plugin. The Maven wrapper
 downloads the pinned Maven version on first use.
 
 1. Copy `.env.example` to `.env`. Set distinct local database and bootstrap
-   administrator passwords, and generate a random JWT signing key containing at
-   least 32 bytes. For example, in PowerShell:
+   administrator passwords. Generate two separate random keys containing 32
+   bytes each, one for JWT signing and one for credential encryption. In
+   PowerShell, run this once for each key:
 
    ```powershell
    $bytes = New-Object byte[] 32
@@ -21,32 +22,34 @@ downloads the pinned Maven version on first use.
    $rng.Dispose()
    ```
 
-   Put the resulting Base64 value in `JWT_SIGNING_KEY`. The bootstrap username
-   and password must both be set; the password must contain at least 12
-   characters. `.env` is ignored by Git and is read by both Compose and Spring.
+   Put the first Base64 value in `JWT_SIGNING_KEY` and the second in
+   `CREDENTIAL_ENCRYPTION_KEY`. Set the bootstrap username and password; the
+   password must contain at least 12 characters. `.env` is ignored by Git and
+   is read by both Compose and Spring.
 2. Start the metadata database with `docker compose up -d metadata-db`.
 3. Run the application with `.\mvnw.cmd spring-boot:run`.
 4. Check `http://127.0.0.1:8080/actuator/health`.
 
-Run the test suite with `.\mvnw.cmd -B test`. By default the integration tests
-start PostgreSQL 17.6 with Testcontainers, so Docker must be running. To use an
-isolated, disposable PostgreSQL database instead, set `TEST_DATABASE_URL`,
-`TEST_DATABASE_USERNAME`, and `TEST_DATABASE_PASSWORD` before running the tests.
-The tests apply Flyway migrations and create test users and records in that
-database.
+Run the test suite with `.\mvnw.cmd -B test`. Tests use Testcontainers to start
+disposable PostgreSQL 17.6 databases and the provisioning integration test also
+requires a running Docker engine. Alternatively, set `TEST_DATABASE_URL`,
+`TEST_DATABASE_USERNAME`, and `TEST_DATABASE_PASSWORD` to use an isolated,
+disposable PostgreSQL database for tests that do not require Docker. The tests
+apply Flyway migrations and create test users and records in that database.
 
-The database data is stored in the Compose-managed `metadata-data` volume. The
-application and metadata database bind to localhost by default. Managed
-PostgreSQL containers will be a separate resource pool and will not use the
-metadata database.
+Metadata is stored in the Compose-managed `metadata-data` volume. The
+application and metadata database bind to localhost by default. Each managed
+PostgreSQL container uses its own labeled Docker volume, a randomly assigned
+host port bound only to `127.0.0.1`, and the pinned `postgres:17.6` image.
 
 ## Architecture and security boundary
 
 The backend is a single Java 21 / Spring Boot 3.5.6 application. PostgreSQL
-stores platform metadata and durable work; Flyway applies schema migrations.
-The pinned PostgreSQL image is `postgres:17.6`. Docker is used only for the
-metadata database at this stage; managed-instance containers are not yet
-implemented.
+stores platform metadata and durable operations; Flyway applies schema
+migrations. A scheduled worker claims queued operations from PostgreSQL and
+provisions managed instances through Docker. Database passwords are encrypted
+with AES-256-GCM before being persisted in operation payloads; the encryption
+key must be supplied externally as `CREDENTIAL_ENCRYPTION_KEY`.
 
 Docker access is privileged: anyone able to control the Docker daemon may
 control containers and host resources. The initial deployment is intended only
@@ -56,6 +59,9 @@ internet-facing production use. Never commit `.env` or use real credentials in
 
 Application roles (administrator, operator, viewer) govern use of this platform
 and are distinct from PostgreSQL roles and privileges inside managed databases.
+Managed instances currently use the `postgres` database user; lifecycle
+operations, explicit data deletion, retries, and recovery are planned for later
+milestones.
 
 ## Authentication and API
 
@@ -68,39 +74,38 @@ Administrators can list users and change another user's role with
 change their own role, and the final enabled administrator cannot be demoted.
 Passwords are stored as PBKDF2 hashes. API responses omit password hashes.
 
-Available endpoints in this milestone:
-
 | Method | Path | Access |
 |---|---|---|
 | `POST` | `/api/auth/register` | Public; creates a viewer |
 | `POST` | `/api/auth/login` | Public |
 | `GET` | `/api/auth/me` | Authenticated |
+| `POST` | `/api/instances` | Authenticated; queues provisioning |
 | `GET` | `/api/instances` | Authenticated; own records, or all for administrators |
 | `GET` | `/api/instances/{id}` | Owner or administrator |
 | `GET` | `/api/operations/{id}` | Owner or administrator |
 | `GET` | `/api/admin/users` | Administrator |
 | `PATCH` | `/api/admin/users/{userId}/role` | Administrator |
 
-Non-administrators receive `404` when requesting another owner's instance or
-operation, avoiding resource-existence disclosure. Instance creation,
-asynchronous operations, and Docker lifecycle endpoints are not implemented
-yet. Validation and API errors use `application/problem+json`.
-
-For example, register a viewer and exchange credentials for a bearer token:
+Create an instance by sending a name and a database password of at least 12
+characters:
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:8080/api/auth/register `
-  -H "Content-Type: application/json" `
-  -d '{"username":"viewer1","password":"<PASSWORD-OF-AT-LEAST-12-CHARACTERS>"}'
-
-$token = (Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:8080/api/auth/login `
+$accepted = Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8080/api/instances `
+  -Headers @{ Authorization = "Bearer $token" } `
   -ContentType 'application/json' `
-  -Body '{"username":"viewer1","password":"<PASSWORD-OF-AT-LEAST-12-CHARACTERS>"}').accessToken
+  -Body '{"name":"dev-db","databasePassword":"<PASSWORD-OF-AT-LEAST-12-CHARACTERS>"}'
 
-Invoke-RestMethod -Uri http://127.0.0.1:8080/api/instances `
-  -Headers @{ Authorization = "Bearer $token" }
+$accepted
 ```
+
+The request returns HTTP `202 Accepted` with an operation ID and `QUEUED` state.
+Poll `GET /api/operations/{operationId}` until it reaches `SUCCEEDED` or
+`FAILED`, then retrieve the instance using `GET /api/instances/{instanceId}`.
+The instance response includes its state, database username, and localhost host
+port; the password is never returned. Non-administrators receive `404` when
+requesting another owner's instance or operation, avoiding resource-existence
+disclosure. Validation and API errors use `application/problem+json`.
 
 The application binds to localhost by default. Docker access is privileged:
 anyone able to control the Docker daemon can control containers and host

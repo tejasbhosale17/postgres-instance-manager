@@ -9,6 +9,9 @@ public record InstanceRecord(
         String displayName,
         String postgresVersion,
         String state,
+        String databaseName,
+        String databaseUsername,
+        Integer hostPort,
         Instant createdAt,
         Instant updatedAt) {
 }

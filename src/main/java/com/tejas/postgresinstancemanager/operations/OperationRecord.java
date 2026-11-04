@@ -10,6 +10,7 @@ public record OperationRecord(
         String operationType,
         String state,
         int attemptCount,
+        String errorCode,
         Instant createdAt,
         Instant updatedAt) {
 }
