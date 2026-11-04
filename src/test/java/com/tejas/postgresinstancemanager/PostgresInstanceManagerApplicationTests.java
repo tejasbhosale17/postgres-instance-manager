@@ -1,35 +1,36 @@
 package com.tejas.postgresinstancemanager;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
 class PostgresInstanceManagerApplicationTests {
 
-    @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17.6");
 
     @DynamicPropertySource
     static void configureDatabase(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        TestPostgres.configure(registry, POSTGRES);
+        registry.add("app.security.jwt-signing-key",
+                () -> "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=");
     }
 
-    private final JdbcTemplate jdbcTemplate;
-
-    PostgresInstanceManagerApplicationTests(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
+    @AfterAll
+    static void stopPostgres() {
+        TestPostgres.stop(POSTGRES);
     }
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void startsAndAppliesInitialMigration() {

@@ -14,7 +14,7 @@ metadata database on localhost for trusted local development only.
 
 - [x] 0. Establish the Maven project, local metadata database, initial schema,
   configuration, and architecture documentation; verify application startup.
-- [ ] 1. Add authentication, ownership-aware metadata APIs, validation, errors,
+- [x] 1. Add authentication, ownership-aware metadata APIs, validation, errors,
   and authorization tests.
 - [ ] 2. Add durable asynchronous provisioning, Docker integration, readiness
   checks, persistent volumes, and a working create flow.

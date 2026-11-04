@@ -30,3 +30,10 @@ info:
   app:
     name: PostgreSQL Instance Management Platform
     description: Local development control plane
+
+app:
+  security:
+    jwt-signing-key: ${JWT_SIGNING_KEY}
+  bootstrap:
+    admin-username: ${BOOTSTRAP_ADMIN_USERNAME:}
+    admin-password: ${BOOTSTRAP_ADMIN_PASSWORD:}
