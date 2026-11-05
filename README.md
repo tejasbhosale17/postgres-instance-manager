@@ -99,8 +99,24 @@ Passwords are stored as PBKDF2 hashes. API responses omit password hashes.
 | `GET` | `/api/instances` | Authenticated; own records, or all for administrators |
 | `GET` | `/api/instances/{id}` | Owner or administrator |
 | `GET` | `/api/operations/{id}` | Owner or administrator |
+| `GET` | `/api/activity?limit=50` | Authenticated; own audit and operation activity, or all for administrators |
 | `GET` | `/api/admin/users` | Administrator |
 | `PATCH` | `/api/admin/users/{userId}/role` | Administrator |
+
+Each response includes an `X-Correlation-ID`. A valid supplied value (1–64
+letters, digits, dots, underscores, or hyphens) is reused; otherwise the
+application generates a UUID. The ID is included in application log lines,
+problem responses, queued operations, and related audit events. Health status
+is public and exposes only the overall status; Actuator metrics and info require
+administrator access. Metrics include HTTP request measurements, worker
+operation durations, operation outcome counters, and operation queue-state
+gauges.
+
+Instance operation requests and asynchronous outcomes are recorded as audit
+events. Activity is limited to 100 recent events per request (default 50).
+Audit metadata contains operation type, instance ID, state, and safe error
+codes only; it does not contain database passwords, encrypted credentials,
+tokens, or operation payloads.
 
 Create an instance by sending a name and a database password of at least 12
 characters:

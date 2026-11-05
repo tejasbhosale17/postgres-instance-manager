@@ -10,5 +10,6 @@ public record OperationJob(
         String previousInstanceState,
         UUID leaseToken,
         int attemptCount,
-        int maxAttempts) {
+        int maxAttempts,
+        String correlationId) {
 }

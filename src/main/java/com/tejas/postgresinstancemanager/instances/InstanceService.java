@@ -1,8 +1,10 @@
 package com.tejas.postgresinstancemanager.instances;
 
+import com.tejas.postgresinstancemanager.audit.AuditEventService;
 import com.tejas.postgresinstancemanager.operations.OperationRepository;
 import com.tejas.postgresinstancemanager.operations.IdempotentOperation;
 import com.tejas.postgresinstancemanager.security.CredentialEncryptionService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -10,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -21,21 +24,28 @@ public class InstanceService {
     private final InstanceRepository instanceRepository;
     private final OperationRepository operationRepository;
     private final CredentialEncryptionService credentialEncryptionService;
+    private final AuditEventService auditEventService;
+    private final MeterRegistry meterRegistry;
 
     public InstanceService(
             InstanceRepository instanceRepository,
             OperationRepository operationRepository,
-            CredentialEncryptionService credentialEncryptionService) {
+            CredentialEncryptionService credentialEncryptionService,
+            AuditEventService auditEventService,
+            MeterRegistry meterRegistry) {
         this.instanceRepository = instanceRepository;
         this.operationRepository = operationRepository;
         this.credentialEncryptionService = credentialEncryptionService;
+        this.auditEventService = auditEventService;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
     public OperationAccepted requestProvisioning(
             UUID ownerId,
             CreateInstanceRequest request,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String correlationId) {
         validateIdempotencyKey(idempotencyKey);
         String requestHash = credentialEncryptionService.fingerprint(
                 descriptor("CREATE_INSTANCE", request.name(), request.databasePassword()));
@@ -54,7 +64,9 @@ public class InstanceService {
                     instanceId,
                     credentialCiphertext,
                     idempotencyKey,
-                    idempotencyKey == null ? null : requestHash);
+                    idempotencyKey == null ? null : requestHash,
+                    correlationId);
+            recordQueuedOperation(ownerId, operationId, "CREATE_INSTANCE", instanceId, correlationId);
         } catch (DuplicateKeyException exception) {
             throw new InstanceNameAlreadyExistsException();
         }
@@ -66,9 +78,10 @@ public class InstanceService {
             UUID ownerId,
             boolean administrator,
             UUID instanceId,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "START_INSTANCE",
-                List.of("STOPPED"), "STARTING", idempotencyKey);
+                List.of("STOPPED"), "STARTING", idempotencyKey, correlationId);
     }
 
     @Transactional
@@ -76,9 +89,10 @@ public class InstanceService {
             UUID ownerId,
             boolean administrator,
             UUID instanceId,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "STOP_INSTANCE",
-                List.of("READY"), "STOPPING", idempotencyKey);
+                List.of("READY"), "STOPPING", idempotencyKey, correlationId);
     }
 
     @Transactional
@@ -86,9 +100,10 @@ public class InstanceService {
             UUID ownerId,
             boolean administrator,
             UUID instanceId,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "RESTART_INSTANCE",
-                List.of("READY", "STOPPED"), "RESTARTING", idempotencyKey);
+                List.of("READY", "STOPPED"), "RESTARTING", idempotencyKey, correlationId);
     }
 
     @Transactional
@@ -96,9 +111,10 @@ public class InstanceService {
             UUID ownerId,
             boolean administrator,
             UUID instanceId,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "DELETE_INSTANCE",
-                List.of("READY", "STOPPED", "FAILED"), "DELETING", idempotencyKey);
+                List.of("READY", "STOPPED", "FAILED"), "DELETING", idempotencyKey, correlationId);
     }
 
     private OperationAccepted queueOperation(
@@ -108,7 +124,8 @@ public class InstanceService {
             String operationType,
             List<String> allowedStates,
             String nextState,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String correlationId) {
         validateIdempotencyKey(idempotencyKey);
         String requestHash = credentialEncryptionService.fingerprint(descriptor(operationType, instanceId.toString()));
         Optional<IdempotentOperation> existing = findExisting(ownerId, idempotencyKey, requestHash);
@@ -132,8 +149,26 @@ public class InstanceService {
                 credentialCiphertext,
                 previousInstanceState,
                 idempotencyKey,
-                idempotencyKey == null ? null : requestHash);
+                idempotencyKey == null ? null : requestHash,
+                correlationId);
+        recordQueuedOperation(ownerId, operationId, operationType, instanceId, correlationId);
         return new OperationAccepted(operationId, "QUEUED");
+    }
+
+    private void recordQueuedOperation(
+            UUID ownerId,
+            UUID operationId,
+            String operationType,
+            UUID instanceId,
+            String correlationId) {
+        auditEventService.record(
+                ownerId,
+                "OPERATION_QUEUED",
+                "OPERATION",
+                operationId,
+                Map.of("operationType", operationType, "instanceId", instanceId.toString()),
+                correlationId);
+        meterRegistry.counter("pim.operations.accepted", "operation_type", operationType).increment();
     }
 
     private Optional<IdempotentOperation> findExisting(

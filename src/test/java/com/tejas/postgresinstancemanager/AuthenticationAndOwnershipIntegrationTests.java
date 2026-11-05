@@ -24,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -183,6 +184,7 @@ class AuthenticationAndOwnershipIntegrationTests {
     void administratorRoleChangesAreAuthorizedAndAudited() throws Exception {
         UUID viewerId = register("role-target", "role-target-password");
         String adminToken = login("integration-admin", ADMIN_PASSWORD);
+        String correlationId = "role-change-correlation";
 
         mockMvc.perform(get("/api/admin/users")
                         .header("Authorization", bearer(adminToken)))
@@ -190,6 +192,7 @@ class AuthenticationAndOwnershipIntegrationTests {
                 .andExpect(jsonPath("$[*].username").value(hasItem("role-target")));
         mockMvc.perform(patch("/api/admin/users/{id}/role", viewerId)
                         .header("Authorization", bearer(adminToken))
+                        .header("X-Correlation-ID", correlationId)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\":\"OPERATOR\"}"))
                 .andExpect(status().isOk())
@@ -199,8 +202,16 @@ class AuthenticationAndOwnershipIntegrationTests {
                 "SELECT COUNT(*) FROM audit_event WHERE actor_id IS NOT NULL AND action = 'USER_ROLE_CHANGED'",
                 Integer.class);
         assertThat(auditCount).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT correlation_id FROM audit_event WHERE action = 'USER_ROLE_CHANGED'",
+                String.class)).isEqualTo(correlationId);
 
         String operatorToken = login("role-target", "role-target-password");
+        mockMvc.perform(get("/api/activity")
+                        .header("Authorization", bearer(operatorToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].action").value("USER_ROLE_CHANGED"))
+                .andExpect(jsonPath("$[0].correlationId").value(correlationId));
         mockMvc.perform(get("/api/admin/users")
                         .header("Authorization", bearer(operatorToken)))
                 .andExpect(status().isForbidden())
@@ -268,6 +279,81 @@ class AuthenticationAndOwnershipIntegrationTests {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT state FROM managed_instance WHERE id = ?", String.class, instanceId))
                 .isEqualTo("READY");
+    }
+
+    @Test
+    void correlationIdsReachErrorResponsesAndRemainOwnerScopedInActivity() throws Exception {
+        String correlationId = "m5-trace-123";
+        mockMvc.perform(get("/api/auth/me")
+                        .header("X-Correlation-ID", correlationId))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("X-Correlation-ID", correlationId))
+                .andExpect(jsonPath("$.correlationId").value(correlationId));
+
+        UUID ownerId = register("activity-owner", "activity-owner-password");
+        UUID otherOwnerId = register("activity-other", "activity-other-password");
+        String ownerToken = login("activity-owner", "activity-owner-password");
+        UUID ownerOperationId = insertAuditedOperation(ownerId, "owner-event", correlationId);
+        UUID otherOperationId = insertAuditedOperation(otherOwnerId, "other-event", "other-trace");
+
+        String activity = mockMvc.perform(get("/api/activity")
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode entries = objectMapper.readTree(activity);
+        assertThat(entries.toString()).contains(ownerOperationId.toString(), correlationId);
+        assertThat(entries.toString()).doesNotContain(otherOperationId.toString(), "other-trace");
+    }
+
+    @Test
+    void healthIsPublicAndOperationalMetricsRequireAdministrator() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.components").doesNotExist());
+        mockMvc.perform(get("/actuator/metrics/pim.operations.in_state"))
+                .andExpect(status().isUnauthorized());
+
+        String adminToken = login("integration-admin", ADMIN_PASSWORD);
+        mockMvc.perform(get("/actuator/metrics/pim.operations.in_state")
+                        .header("Authorization", bearer(adminToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("pim.operations.in_state"));
+    }
+
+    private UUID insertAuditedOperation(UUID ownerId, String displayName, String correlationId) {
+        UUID instanceId = UUID.randomUUID();
+        UUID operationId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO managed_instance
+                    (id, owner_id, display_name, postgres_version, state)
+                VALUES (?, ?, ?, '17.6', 'READY')
+                """,
+                instanceId,
+                ownerId,
+                displayName);
+        jdbcTemplate.update(
+                """
+                INSERT INTO operation
+                    (id, owner_id, instance_id, operation_type, state, correlation_id)
+                VALUES (?, ?, ?, 'BACKUP', 'SUCCEEDED', ?)
+                """,
+                operationId,
+                ownerId,
+                instanceId,
+                correlationId);
+        jdbcTemplate.update(
+                """
+                INSERT INTO audit_event (id, action, resource_type, resource_id, details, correlation_id)
+                VALUES (?, 'OPERATION_SUCCEEDED', 'OPERATION', ?, '{}'::jsonb, ?)
+                """,
+                UUID.randomUUID(),
+                operationId,
+                correlationId);
+        return operationId;
     }
 
     private UUID register(String username, String password) throws Exception {

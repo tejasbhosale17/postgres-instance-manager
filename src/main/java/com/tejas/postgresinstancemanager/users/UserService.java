@@ -63,12 +63,17 @@ public class UserService {
                 "BOOTSTRAP_ADMIN_CREATED",
                 "USER",
                 administrator.id(),
-                auditDetails(Map.of("username", username)));
+                auditDetails(Map.of("username", username)),
+                null);
         return administrator.summary();
     }
 
     @Transactional
-    public UserSummary changeRole(UUID actorId, UUID targetUserId, UserRole newRole) {
+    public UserSummary changeRole(
+            UUID actorId,
+            UUID targetUserId,
+            UserRole newRole,
+            String correlationId) {
         if (actorId.equals(targetUserId)) {
             throw new SelfRoleChangeException();
         }
@@ -86,7 +91,8 @@ public class UserService {
                 "USER_ROLE_CHANGED",
                 "USER",
                 targetUserId,
-                auditDetails(Map.of("previousRole", target.role().name(), "newRole", newRole.name())));
+                auditDetails(Map.of("previousRole", target.role().name(), "newRole", newRole.name())),
+                correlationId);
         return userRepository.findById(targetUserId)
                 .orElseThrow(ResourceNotFoundException::new)
                 .summary();

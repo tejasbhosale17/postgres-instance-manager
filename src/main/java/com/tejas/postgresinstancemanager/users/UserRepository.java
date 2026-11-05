@@ -88,17 +88,20 @@ public class UserRepository {
             String action,
             String resourceType,
             UUID resourceId,
-            String detailsJson) {
+            String detailsJson,
+            String correlationId) {
         jdbcTemplate.update(
                 """
-                INSERT INTO audit_event (id, actor_id, action, resource_type, resource_id, details)
-                VALUES (?, ?, ?, ?, ?, ?::jsonb)
+                INSERT INTO audit_event
+                    (id, actor_id, action, resource_type, resource_id, details, correlation_id)
+                VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)
                 """,
                 UUID.randomUUID(),
                 actorId,
                 action,
                 resourceType,
                 resourceId,
-                detailsJson);
+                detailsJson,
+                correlationId);
     }
 }

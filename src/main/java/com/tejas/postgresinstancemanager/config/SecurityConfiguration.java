@@ -17,6 +17,7 @@ import org.springframework.security.crypto.password.Pbkdf2PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.access.AccessDeniedHandler;
+import org.slf4j.MDC;
 
 import java.io.IOException;
 import java.net.URI;
@@ -96,6 +97,10 @@ public class SecurityConfiguration {
         problem.setTitle(title);
         problem.setDetail(detail);
         problem.setType(URI.create("about:blank"));
+        String correlationId = MDC.get("correlationId");
+        if (correlationId != null) {
+            problem.setProperty("correlationId", correlationId);
+        }
         objectMapper.writeValue(response.getOutputStream(), problem);
     }
 }

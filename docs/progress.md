@@ -97,3 +97,22 @@
   procedures remain operational concerns.
 - **Next:** Milestone 5 — health, metrics, correlation IDs, audit events, and
   activity views.
+
+## Milestone 5 — Operational observability and activity
+
+- **Status:** Implemented; integration verification completed.
+- **Completed:** Added a Docker health indicator while retaining the
+  PostgreSQL health check, with public health output limited to overall status.
+  Added operation queue-state gauges, accepted/completed counters, and worker
+  duration metrics behind administrator-protected Actuator endpoints.
+  Requests now receive a validated or generated correlation ID in the response
+  header, error body, application logs, persisted operation, and audit trail.
+  Instance operation requests and asynchronous outcomes are audited without
+  recording credentials or payloads. Added a bounded, owner-scoped activity
+  endpoint; administrators can view platform-wide activity.
+- **Validation:** `.\mvnw.cmd -B test` passed with all 15 tests executed,
+  including correlation propagation, activity ownership, public health output,
+  Actuator access controls, and the existing Docker-backed lifecycle suite.
+- **Limitations:** Metrics are in-process and reset on restart; durable audit
+  retention/export remains an operational responsibility.
+- **Next:** Milestone 6 — asynchronous logical backup and verified restore.

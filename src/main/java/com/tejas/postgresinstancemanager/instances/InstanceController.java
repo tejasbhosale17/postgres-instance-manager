@@ -1,6 +1,7 @@
 package com.tejas.postgresinstancemanager.instances;
 
 import com.tejas.postgresinstancemanager.api.ResourceNotFoundException;
+import com.tejas.postgresinstancemanager.config.CorrelationIdFilter;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -33,11 +35,13 @@ public class InstanceController {
     public ResponseEntity<OperationAccepted> create(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody CreateInstanceRequest request,
-            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestAttribute(CorrelationIdFilter.ATTRIBUTE_NAME) String correlationId) {
         OperationAccepted accepted = instanceService.requestProvisioning(
                 UUID.fromString(jwt.getSubject()),
                 request,
-                idempotencyKey);
+                idempotencyKey,
+                correlationId);
         return ResponseEntity.accepted().body(accepted);
     }
 
@@ -64,27 +68,30 @@ public class InstanceController {
     public ResponseEntity<OperationAccepted> start(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable UUID instanceId,
-            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestAttribute(CorrelationIdFilter.ATTRIBUTE_NAME) String correlationId) {
         return accepted(instanceService.requestStart(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey, correlationId));
     }
 
     @PostMapping("/{instanceId}/stop")
     public ResponseEntity<OperationAccepted> stop(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable UUID instanceId,
-            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestAttribute(CorrelationIdFilter.ATTRIBUTE_NAME) String correlationId) {
         return accepted(instanceService.requestStop(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey, correlationId));
     }
 
     @PostMapping("/{instanceId}/restart")
     public ResponseEntity<OperationAccepted> restart(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable UUID instanceId,
-            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestAttribute(CorrelationIdFilter.ATTRIBUTE_NAME) String correlationId) {
         return accepted(instanceService.requestRestart(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey, correlationId));
     }
 
     @DeleteMapping("/{instanceId}")
@@ -92,9 +99,10 @@ public class InstanceController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable UUID instanceId,
             @Valid @RequestBody DeleteInstanceRequest request,
-            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestAttribute(CorrelationIdFilter.ATTRIBUTE_NAME) String correlationId) {
         return accepted(instanceService.requestDelete(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey, correlationId));
     }
 
     private ResponseEntity<OperationAccepted> accepted(OperationAccepted operation) {

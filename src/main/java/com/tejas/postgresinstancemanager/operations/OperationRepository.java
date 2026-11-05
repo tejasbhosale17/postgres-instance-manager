@@ -37,21 +37,23 @@ public class OperationRepository {
             UUID instanceId,
             String credentialCiphertext,
             String idempotencyKey,
-            String requestHash) {
+            String requestHash,
+            String correlationId) {
         jdbcTemplate.update(
                 """
                 INSERT INTO operation
                     (id, owner_id, instance_id, operation_type, state, payload,
-                     idempotency_key, request_hash)
+                     idempotency_key, request_hash, correlation_id)
                 VALUES (?, ?, ?, 'CREATE_INSTANCE', 'QUEUED',
-                        jsonb_build_object('credentialCiphertext', ?), ?, ?)
+                        jsonb_build_object('credentialCiphertext', ?), ?, ?, ?)
                 """,
                 operationId,
                 ownerId,
                 instanceId,
                 credentialCiphertext,
                 idempotencyKey,
-                requestHash);
+                requestHash,
+                correlationId);
     }
 
     public void enqueueInstanceOperation(
@@ -62,16 +64,17 @@ public class OperationRepository {
             String credentialCiphertext,
             String previousInstanceState,
             String idempotencyKey,
-            String requestHash) {
+            String requestHash,
+            String correlationId) {
         jdbcTemplate.update(
                 """
                 INSERT INTO operation
                     (id, owner_id, instance_id, operation_type, state, payload,
-                     previous_instance_state, idempotency_key, request_hash)
+                     previous_instance_state, idempotency_key, request_hash, correlation_id)
                 VALUES (?, ?, ?, ?, 'QUEUED',
                         CASE WHEN CAST(? AS VARCHAR) IS NULL THEN '{}'::JSONB
                              ELSE jsonb_build_object('credentialCiphertext', CAST(? AS VARCHAR)) END,
-                        ?, ?, ?)
+                        ?, ?, ?, ?)
                 """,
                 operationId,
                 ownerId,
@@ -81,7 +84,8 @@ public class OperationRepository {
                 credentialCiphertext,
                 previousInstanceState,
                 idempotencyKey,
-                requestHash);
+                requestHash,
+                correlationId);
     }
 
     public void lockIdempotencyKey(UUID ownerId, String idempotencyKey) {
@@ -158,7 +162,8 @@ public class OperationRepository {
                 )
                 RETURNING id, instance_id, operation_type, previous_instance_state,
                           lease_token, attempt_count, max_attempts,
-                          payload ->> 'credentialCiphertext' AS credential_ciphertext
+                          payload ->> 'credentialCiphertext' AS credential_ciphertext,
+                          correlation_id
                 """,
                 resultSet -> resultSet.next()
                         ? Optional.of(new OperationJob(
@@ -169,7 +174,8 @@ public class OperationRepository {
                                 resultSet.getString("previous_instance_state"),
                                 resultSet.getObject("lease_token", UUID.class),
                                 resultSet.getInt("attempt_count"),
-                                resultSet.getInt("max_attempts")))
+                                resultSet.getInt("max_attempts"),
+                                resultSet.getString("correlation_id")))
                         : Optional.empty(),
                 workerId,
                 leaseDuration.toSeconds());
@@ -249,14 +255,15 @@ public class OperationRepository {
                 FROM expired
                 WHERE o.id = expired.id
                 RETURNING o.id, o.instance_id, o.operation_type,
-                          o.previous_instance_state, o.state
+                          o.previous_instance_state, o.state, o.correlation_id
                 """,
                 (resultSet, rowNumber) -> new RecoveredOperation(
                         resultSet.getObject("id", UUID.class),
                         resultSet.getObject("instance_id", UUID.class),
                         resultSet.getString("operation_type"),
                         resultSet.getString("previous_instance_state"),
-                        resultSet.getString("state")));
+                        resultSet.getString("state"),
+                        resultSet.getString("correlation_id")));
     }
 
     public Optional<OperationRecord> findByIdAndOwnerId(UUID operationId, UUID ownerId) {
@@ -282,5 +289,13 @@ public class OperationRepository {
                 """,
                 resultSet -> resultSet.next() ? Optional.of(ROW_MAPPER.mapRow(resultSet, 0)) : Optional.empty(),
                 operationId);
+    }
+
+    public long countByState(String state) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM operation WHERE state = ?",
+                Long.class,
+                state);
+        return count == null ? 0 : count;
     }
 }

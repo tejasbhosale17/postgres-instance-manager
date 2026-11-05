@@ -4,8 +4,11 @@ import com.tejas.postgresinstancemanager.operations.OperationJob;
 import com.tejas.postgresinstancemanager.operations.OperationRepository;
 import com.tejas.postgresinstancemanager.security.CredentialEncryptionException;
 import com.tejas.postgresinstancemanager.security.CredentialEncryptionService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -27,12 +30,14 @@ public class ProvisioningWorker {
     private final OperationCompletionService completionService;
     private final CredentialEncryptionService credentialEncryptionService;
     private final ManagedPostgresDocker managedPostgresDocker;
+    private final MeterRegistry meterRegistry;
 
     public ProvisioningWorker(
             OperationRepository operationRepository,
             OperationCompletionService completionService,
             CredentialEncryptionService credentialEncryptionService,
             ManagedPostgresDocker managedPostgresDocker,
+            MeterRegistry meterRegistry,
             @Value("${app.worker.lease-duration-seconds:120}") long leaseDurationSeconds) {
         if (leaseDurationSeconds < 30) {
             throw new IllegalStateException("Worker lease duration must be at least 30 seconds.");
@@ -41,6 +46,7 @@ public class ProvisioningWorker {
         this.completionService = completionService;
         this.credentialEncryptionService = credentialEncryptionService;
         this.managedPostgresDocker = managedPostgresDocker;
+        this.meterRegistry = meterRegistry;
         leaseDuration = Duration.ofSeconds(leaseDurationSeconds);
     }
 
@@ -72,6 +78,10 @@ public class ProvisioningWorker {
     }
 
     private void process(OperationJob operation) {
+        if (operation.correlationId() != null) {
+            MDC.put("correlationId", operation.correlationId());
+        }
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             OperationResult result = switch (operation.operationType()) {
                 case "CREATE_INSTANCE" -> create(operation);
@@ -99,6 +109,11 @@ public class ProvisioningWorker {
             fail(operation, "CREDENTIAL_DECRYPTION_FAILED");
         } catch (PostgresProvisioningException exception) {
             fail(operation, exception.errorCode());
+        } finally {
+            sample.stop(Timer.builder("pim.worker.operation.duration")
+                    .tag("operation_type", operation.operationType())
+                    .register(meterRegistry));
+            MDC.remove("correlationId");
         }
     }
 

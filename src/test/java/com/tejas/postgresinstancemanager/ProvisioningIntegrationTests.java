@@ -89,18 +89,25 @@ class ProvisioningIntegrationTests {
             String createRequest = objectMapper.writeValueAsString(
                     Map.of("name", "integration-postgres", "databasePassword", databasePassword));
             String createIdempotencyKey = "integration-create-" + UUID.randomUUID();
+            String correlationId = "provision-test-" + UUID.randomUUID();
             String acceptedResponse = mockMvc.perform(post("/api/instances")
                             .header("Authorization", bearer(token))
                             .header("Idempotency-Key", createIdempotencyKey)
+                            .header("X-Correlation-ID", correlationId)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(createRequest))
                     .andExpect(status().isAccepted())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                            .string("X-Correlation-ID", correlationId))
                     .andReturn()
                     .getResponse()
                     .getContentAsString();
             JsonNode accepted = objectMapper.readTree(acceptedResponse);
             UUID operationId = UUID.fromString(accepted.get("operationId").asText());
             assertThat(acceptedResponse).doesNotContain(databasePassword);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT correlation_id FROM operation WHERE id = ?", String.class, operationId))
+                    .isEqualTo(correlationId);
             mockMvc.perform(post("/api/instances")
                             .header("Authorization", bearer(token))
                             .header("Idempotency-Key", createIdempotencyKey)
@@ -122,6 +129,19 @@ class ProvisioningIntegrationTests {
                     operationId);
             JsonNode operation = awaitOperation(token, operationId);
             assertThat(operation.get("state").asText()).isEqualTo("SUCCEEDED");
+            assertThat(jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*) FROM audit_event
+                    WHERE resource_type = 'OPERATION' AND resource_id = ? AND correlation_id = ?
+                    """,
+                    Integer.class,
+                    operationId,
+                    correlationId)).isEqualTo(2);
+            String auditDetails = jdbcTemplate.queryForObject(
+                    "SELECT string_agg(details::text, ' ') FROM audit_event WHERE resource_id = ?",
+                    String.class,
+                    operationId);
+            assertThat(auditDetails).doesNotContain(databasePassword, "credentialCiphertext");
 
             JsonNode instance = objectMapper.readTree(mockMvc.perform(get("/api/instances/{id}", instanceId)
                             .header("Authorization", bearer(token)))
