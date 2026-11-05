@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
@@ -54,6 +55,9 @@ public class CredentialEncryptionService {
     }
 
     public String decrypt(UUID instanceId, String ciphertext) {
+        if (ciphertext == null) {
+            throw new CredentialEncryptionException("The stored database credential is missing.");
+        }
         final byte[] payload;
         try {
             payload = Base64.getDecoder().decode(ciphertext);
@@ -74,6 +78,20 @@ public class CredentialEncryptionService {
             return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
         } catch (GeneralSecurityException exception) {
             throw new CredentialEncryptionException("Could not decrypt the stored database credential.", exception);
+        }
+    }
+
+    public String fingerprint(String requestDescriptor) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            digest.update("pim-idempotency-fingerprint-v1:".getBytes(StandardCharsets.UTF_8));
+            byte[] fingerprintKey = digest.digest(encryptionKey.getEncoded());
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(fingerprintKey, "HmacSHA256"));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    mac.doFinal(requestDescriptor.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException exception) {
+            throw new IllegalStateException("Could not fingerprint the idempotent request.", exception);
         }
     }
 

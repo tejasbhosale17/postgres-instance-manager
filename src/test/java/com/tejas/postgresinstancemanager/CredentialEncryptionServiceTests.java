@@ -35,4 +35,21 @@ class CredentialEncryptionServiceTests {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("32 random bytes");
     }
+
+    @Test
+    void rejectsMissingCiphertext() {
+        assertThatThrownBy(() -> encryptionService.decrypt(UUID.randomUUID(), null))
+                .isInstanceOf(CredentialEncryptionException.class)
+                .hasMessageContaining("missing");
+    }
+
+    @Test
+    void fingerprintsAreStableAndSecretKeyed() {
+        assertThat(encryptionService.fingerprint("create:db:password"))
+                .isEqualTo(encryptionService.fingerprint("create:db:password"))
+                .isNotEqualTo(encryptionService.fingerprint("create:db:other-password"));
+        assertThat(encryptionService.fingerprint("create:db:password"))
+                .isNotEqualTo(new CredentialEncryptionService(
+                        "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=").fingerprint("create:db:password"));
+    }
 }

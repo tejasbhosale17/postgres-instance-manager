@@ -6,6 +6,8 @@ import com.tejas.postgresinstancemanager.users.SelfRoleChangeException;
 import com.tejas.postgresinstancemanager.users.UsernameAlreadyExistsException;
 import com.tejas.postgresinstancemanager.instances.InstanceNameAlreadyExistsException;
 import com.tejas.postgresinstancemanager.instances.InstanceStateConflictException;
+import com.tejas.postgresinstancemanager.instances.IdempotencyKeyConflictException;
+import com.tejas.postgresinstancemanager.instances.InvalidIdempotencyKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -51,6 +53,17 @@ public class ApiExceptionHandler {
     @ExceptionHandler(InstanceStateConflictException.class)
     ResponseEntity<ProblemDetail> handleInstanceStateConflict() {
         return response(HttpStatus.CONFLICT, "Conflict", "The requested operation is not valid for the instance's current state.");
+    }
+
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    ResponseEntity<ProblemDetail> handleIdempotencyConflict() {
+        return response(HttpStatus.CONFLICT, "Conflict", "The Idempotency-Key was already used for a different request.");
+    }
+
+    @ExceptionHandler(InvalidIdempotencyKeyException.class)
+    ResponseEntity<ProblemDetail> handleInvalidIdempotencyKey() {
+        return response(HttpStatus.BAD_REQUEST, "Invalid Idempotency-Key",
+                "The Idempotency-Key must contain 1 to 255 nonblank characters.");
     }
 
     @ExceptionHandler(InvalidCredentialsException.class)

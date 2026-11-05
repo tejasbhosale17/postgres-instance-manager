@@ -1,6 +1,7 @@
 package com.tejas.postgresinstancemanager.worker;
 
 import java.util.UUID;
+import java.util.Optional;
 
 public interface ManagedPostgresDocker {
 
@@ -13,4 +14,6 @@ public interface ManagedPostgresDocker {
     int restart(UUID instanceId, String databasePassword);
 
     void delete(UUID instanceId);
+
+    Optional<ManagedPostgresStatus> inspect(UUID instanceId, int currentHostPort);
 }

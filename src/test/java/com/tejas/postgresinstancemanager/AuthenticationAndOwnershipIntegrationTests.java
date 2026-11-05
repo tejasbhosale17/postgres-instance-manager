@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tejas.postgresinstancemanager.users.LoginRequest;
 import com.tejas.postgresinstancemanager.users.RegisterRequest;
+import com.tejas.postgresinstancemanager.worker.OperationCompletionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterAll;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,6 +62,9 @@ class AuthenticationAndOwnershipIntegrationTests {
 
     @Autowired
     private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private OperationCompletionService operationCompletionService;
 
     @Test
     void registrationHashesPasswordAndCannotAssignAdministratorRole() throws Exception {
@@ -210,6 +214,60 @@ class AuthenticationAndOwnershipIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\":\"OPERATOR\"}"))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void expiredLeasesRetryThenRestoreInstanceAfterAttemptsAreExhausted() throws Exception {
+        UUID ownerId = register("lease-owner", "lease-owner-password");
+        UUID instanceId = UUID.randomUUID();
+        UUID operationId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO managed_instance
+                    (id, owner_id, display_name, postgres_version, state)
+                VALUES (?, ?, 'lease-instance', '17.6', 'STOPPING')
+                """,
+                instanceId,
+                ownerId);
+        jdbcTemplate.update(
+                """
+                INSERT INTO operation
+                    (id, owner_id, instance_id, operation_type, state, attempt_count, max_attempts,
+                     worker_id, lease_token, lease_until, previous_instance_state)
+                VALUES (?, ?, ?, 'BACKUP', 'RUNNING', 1, 3, 'stopped-worker',
+                        gen_random_uuid(), CURRENT_TIMESTAMP - INTERVAL '1 minute', 'READY')
+                """,
+                operationId,
+                ownerId,
+                instanceId);
+
+        operationCompletionService.recoverExpiredLeases();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM operation WHERE id = ?", String.class, operationId))
+                .isEqualTo("RETRY_WAIT");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT attempt_count FROM operation WHERE id = ?", Integer.class, operationId))
+                .isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT next_attempt_at > CURRENT_TIMESTAMP FROM operation WHERE id = ?",
+                Boolean.class,
+                operationId)).isTrue();
+
+        jdbcTemplate.update(
+                """
+                UPDATE operation
+                SET state = 'RUNNING', attempt_count = 3, lease_token = gen_random_uuid(),
+                    lease_until = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+                WHERE id = ?
+                """,
+                operationId);
+        operationCompletionService.recoverExpiredLeases();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM operation WHERE id = ?", String.class, operationId))
+                .isEqualTo("FAILED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM managed_instance WHERE id = ?", String.class, instanceId))
+                .isEqualTo("READY");
     }
 
     private UUID register(String username, String password) throws Exception {

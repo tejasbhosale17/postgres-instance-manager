@@ -1,8 +1,10 @@
 package com.tejas.postgresinstancemanager;
 
 import com.tejas.postgresinstancemanager.worker.ManagedPostgresDocker;
+import com.tejas.postgresinstancemanager.worker.ManagedPostgresStatus;
 import com.tejas.postgresinstancemanager.worker.ProvisionedPostgres;
 
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -41,6 +43,14 @@ final class FakeManagedPostgresDocker implements ManagedPostgresDocker {
     @Override
     public void delete(UUID instanceId) {
         instances.remove(instanceId);
+    }
+
+    @Override
+    public Optional<ManagedPostgresStatus> inspect(UUID instanceId, int currentHostPort) {
+        ProvisionedPostgres instance = instances.get(instanceId);
+        return instance == null
+                ? Optional.empty()
+                : Optional.of(new ManagedPostgresStatus(true, instance.hostPort()));
     }
 
     private ProvisionedPostgres requireInstance(UUID instanceId) {

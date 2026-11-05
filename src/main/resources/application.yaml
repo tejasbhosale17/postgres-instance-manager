@@ -40,3 +40,7 @@ app:
     admin-password: ${BOOTSTRAP_ADMIN_PASSWORD:}
   worker:
     poll-delay-ms: ${WORKER_POLL_DELAY_MS:500}
+    lease-duration-seconds: ${WORKER_LEASE_DURATION_SECONDS:120}
+    lease-renewal-ms: ${WORKER_LEASE_RENEWAL_MS:30000}
+    recovery-delay-ms: ${WORKER_RECOVERY_DELAY_MS:30000}
+    reconcile-delay-ms: ${WORKER_RECONCILE_DELAY_MS:60000}

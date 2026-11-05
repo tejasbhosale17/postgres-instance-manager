@@ -51,8 +51,8 @@
 - **Limitations:** Lifecycle operations and explicit data deletion,
   idempotency, job leases/retries/recovery/reconciliation, and backup/restore
   are deferred to later milestones.
-- **Next:** Milestone 4 — idempotency, concurrent claims, leases, bounded
-  retries, recovery, and reconciliation.
+- **Next:** Milestone 3 — instance lifecycle operations and explicit
+  persistent-data deletion.
 
 ## Milestone 3 — Instance lifecycle and data deletion
 
@@ -72,3 +72,28 @@
   reconciliation remain in Milestone 4.
 - **Next:** Milestone 4 — idempotency, concurrent claims, leases, bounded
   retries, recovery, and reconciliation.
+
+## Milestone 4 — Idempotency and worker reliability
+
+- **Status:** Implemented; PostgreSQL and Docker integration verification
+  completed.
+- **Completed:** Added optional owner-scoped `Idempotency-Key` support for
+  create and lifecycle requests, with transaction-scoped advisory locks and
+  keyed request fingerprints. Queue claims use `FOR UPDATE SKIP LOCKED`, a
+  unique lease token, worker identity, and renewable leases. Failures are
+  retried with bounded exponential backoff and a three-attempt maximum;
+  expired leases are recovered, and terminal failures restore the prior
+  instance state. Reconciliation checks stable metadata against Docker state,
+  corrects READY/STOPPED drift, and marks missing containers failed without
+  deleting resources.
+- **Validation:** Tests verify duplicate create/lifecycle requests return the
+  original operation, key reuse with a different request returns HTTP 409,
+  two concurrent PostgreSQL claimers cannot claim the same job, expired leases
+  retry and then fail at the attempt limit, and Docker-backed reconciliation
+  observes an externally stopped managed instance. `.\mvnw.cmd -B test` passed
+  with all 13 tests executed (0 failures, 0 errors, 0 skipped).
+- **Limitations:** Reconciliation reports missing containers as `FAILED`; it
+  does not automatically recreate Docker resources. Retention and key-rotation
+  procedures remain operational concerns.
+- **Next:** Milestone 5 — health, metrics, correlation IDs, audit events, and
+  activity views.

@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -54,7 +55,7 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
                 containerId = createContainer(instanceId, volumeName, databasePassword);
                 dockerClient.startContainerCmd(containerId).exec();
             } else {
-                ensureExistingContainerIsManaged(containerId, volumeName);
+                ensureExistingContainerIsManaged(containerId, instanceId, volumeName);
                 InspectContainerResponse existing = dockerClient.inspectContainerCmd(containerId).exec();
                 if (!Boolean.TRUE.equals(existing.getState().getRunning())) {
                     dockerClient.startContainerCmd(containerId).exec();
@@ -137,7 +138,7 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
         try {
             String containerId = findOwnedContainer(instanceId);
             if (containerId != null) {
-                ensureExistingContainerIsManaged(containerId, "pim-pg-data-" + instanceId);
+                ensureExistingContainerIsManaged(containerId, instanceId, "pim-pg-data-" + instanceId);
                 InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
                 if (Boolean.TRUE.equals(container.getState().getRunning())) {
                     dockerClient.stopContainerCmd(containerId).withTimeout(10).exec();
@@ -150,19 +151,42 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
         }
     }
 
+    @Override
+    public Optional<ManagedPostgresStatus> inspect(UUID instanceId, int currentHostPort) {
+        try {
+            String containerId = findOwnedContainer(instanceId);
+            if (containerId == null) {
+                return Optional.empty();
+            }
+            ensureExistingContainerIsManaged(containerId, instanceId, "pim-pg-data-" + instanceId);
+            InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
+            boolean running = Boolean.TRUE.equals(container.getState().getRunning());
+            return Optional.of(new ManagedPostgresStatus(
+                    running,
+                    running ? getHostPort(containerId) : currentHostPort));
+        } catch (DockerException exception) {
+            throw new PostgresProvisioningException("DOCKER_API_ERROR", exception);
+        }
+    }
+
     private String requireManagedContainer(UUID instanceId) {
         String containerId = findOwnedContainer(instanceId);
         if (containerId == null) {
             throw new PostgresProvisioningException("MANAGED_CONTAINER_NOT_FOUND");
         }
-        ensureExistingContainerIsManaged(containerId, "pim-pg-data-" + instanceId);
+        ensureExistingContainerIsManaged(containerId, instanceId, "pim-pg-data-" + instanceId);
         return containerId;
     }
 
     private void removeOwnedVolume(UUID instanceId) {
         String volumeName = "pim-pg-data-" + instanceId;
         try {
-            InspectVolumeResponse volume = dockerClient.inspectVolumeCmd(volumeName).exec();
+            InspectVolumeResponse volume;
+            try {
+                volume = dockerClient.inspectVolumeCmd(volumeName).exec();
+            } catch (NotFoundException exception) {
+                throw new PostgresProvisioningException("MANAGED_VOLUME_NOT_FOUND", exception);
+            }
             if (!hasExpectedLabels(volume.getLabels(), instanceId, "volume")) {
                 throw new PostgresProvisioningException("VOLUME_LABEL_MISMATCH");
             }
@@ -200,7 +224,7 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
         return containers.isEmpty() ? null : containers.get(0).getId();
     }
 
-    private void ensureExistingContainerIsManaged(String containerId, String volumeName) {
+    private void ensureExistingContainerIsManaged(String containerId, UUID instanceId, String volumeName) {
         InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
         if (!POSTGRES_IMAGE.equals(container.getConfig().getImage())) {
             throw new PostgresProvisioningException("CONTAINER_IMAGE_MISMATCH");
@@ -210,6 +234,10 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
                         && POSTGRES_DATA_PATH.equals(mount.getDestination().toString()));
         if (!hasPersistentVolume) {
             throw new PostgresProvisioningException("CONTAINER_VOLUME_MISMATCH");
+        }
+        InspectVolumeResponse volume = dockerClient.inspectVolumeCmd(volumeName).exec();
+        if (!hasExpectedLabels(volume.getLabels(), instanceId, "volume")) {
+            throw new PostgresProvisioningException("VOLUME_LABEL_MISMATCH");
         }
     }
 

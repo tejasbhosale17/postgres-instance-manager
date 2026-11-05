@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -31,10 +32,12 @@ public class InstanceController {
     @PostMapping
     public ResponseEntity<OperationAccepted> create(
             @AuthenticationPrincipal Jwt jwt,
-            @Valid @RequestBody CreateInstanceRequest request) {
+            @Valid @RequestBody CreateInstanceRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
         OperationAccepted accepted = instanceService.requestProvisioning(
                 UUID.fromString(jwt.getSubject()),
-                request);
+                request,
+                idempotencyKey);
         return ResponseEntity.accepted().body(accepted);
     }
 
@@ -60,34 +63,38 @@ public class InstanceController {
     @PostMapping("/{instanceId}/start")
     public ResponseEntity<OperationAccepted> start(
             @AuthenticationPrincipal Jwt jwt,
-            @PathVariable UUID instanceId) {
+            @PathVariable UUID instanceId,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
         return accepted(instanceService.requestStart(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
     }
 
     @PostMapping("/{instanceId}/stop")
     public ResponseEntity<OperationAccepted> stop(
             @AuthenticationPrincipal Jwt jwt,
-            @PathVariable UUID instanceId) {
+            @PathVariable UUID instanceId,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
         return accepted(instanceService.requestStop(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
     }
 
     @PostMapping("/{instanceId}/restart")
     public ResponseEntity<OperationAccepted> restart(
             @AuthenticationPrincipal Jwt jwt,
-            @PathVariable UUID instanceId) {
+            @PathVariable UUID instanceId,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
         return accepted(instanceService.requestRestart(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
     }
 
     @DeleteMapping("/{instanceId}")
     public ResponseEntity<OperationAccepted> delete(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable UUID instanceId,
-            @Valid @RequestBody DeleteInstanceRequest request) {
+            @Valid @RequestBody DeleteInstanceRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
         return accepted(instanceService.requestDelete(
-                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId, idempotencyKey));
     }
 
     private ResponseEntity<OperationAccepted> accepted(OperationAccepted operation) {

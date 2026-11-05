@@ -47,9 +47,19 @@ host port bound only to `127.0.0.1`, and the pinned `postgres:17.6` image.
 The backend is a single Java 21 / Spring Boot 3.5.6 application. PostgreSQL
 stores platform metadata and durable operations; Flyway applies schema
 migrations. A scheduled worker claims queued operations from PostgreSQL and
-provisions managed instances through Docker. Database passwords are encrypted
-with AES-256-GCM before being persisted in operation payloads; the encryption
-key must be supplied externally as `CREDENTIAL_ENCRYPTION_KEY`.
+provisions managed instances through Docker. Each claim has a renewable,
+token-fenced lease; abandoned jobs are retried with bounded exponential
+backoff, then failed after three attempts. A periodic reconciler compares
+stable instance records with labeled Docker containers and corrects
+READY/STOPPED drift or marks missing containers failed. It does not recreate
+containers or delete resources during reconciliation.
+
+Database passwords are encrypted with AES-256-GCM before being persisted in
+operation payloads; the encryption key must be supplied externally as
+`CREDENTIAL_ENCRYPTION_KEY`. Optional `Idempotency-Key` headers on instance
+creation and lifecycle requests allow clients to safely retry requests: the
+same owner, key, and request returns the original operation, while reusing a
+key for a different request returns HTTP 409.
 
 Docker access is privileged: anyone able to control the Docker daemon may
 control containers and host resources. The initial deployment is intended only
@@ -59,9 +69,11 @@ internet-facing production use. Never commit `.env` or use real credentials in
 
 Application roles (administrator, operator, viewer) govern use of this platform
 and are distinct from PostgreSQL roles and privileges inside managed databases.
-Managed instances currently use the `postgres` database user; lifecycle
-operations, explicit data deletion, retries, and recovery are planned for later
-milestones.
+Managed instances currently use the `postgres` database user. Lease and
+reconciliation schedules can be tuned with `WORKER_LEASE_DURATION_SECONDS`,
+`WORKER_LEASE_RENEWAL_MS`, `WORKER_RECOVERY_DELAY_MS`, and
+`WORKER_RECONCILE_DELAY_MS`; their defaults are 120 seconds, 30 seconds,
+30 seconds, and 60 seconds respectively.
 
 ## Authentication and API
 
@@ -94,9 +106,10 @@ Create an instance by sending a name and a database password of at least 12
 characters:
 
 ```powershell
+$idempotencyKey = [guid]::NewGuid().ToString()
 $accepted = Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:8080/api/instances `
-  -Headers @{ Authorization = "Bearer $token" } `
+  -Headers @{ Authorization = "Bearer $token"; 'Idempotency-Key' = $idempotencyKey } `
   -ContentType 'application/json' `
   -Body '{"name":"dev-db","databasePassword":"<PASSWORD-OF-AT-LEAST-12-CHARACTERS>"}'
 
@@ -110,6 +123,12 @@ The instance response includes its state, database username, and localhost host
 port; the password is never returned. Non-administrators receive `404` when
 requesting another owner's instance or operation, avoiding resource-existence
 disclosure. Validation and API errors use `application/problem+json`.
+
+The optional `Idempotency-Key` header is scoped to the authenticated owner and
+supports up to 255 nonblank characters. Repeating the same request with the
+same key returns the original operation ID. A different request with a
+previously used key returns HTTP `409 Conflict`. If the header is omitted,
+each request is treated as new.
 
 Start, stop, and restart are also asynchronous and return an operation ID. A
 start is valid only for a stopped instance, stop only for a ready instance, and

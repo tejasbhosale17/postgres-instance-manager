@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,17 +35,23 @@ public class OperationRepository {
             UUID operationId,
             UUID ownerId,
             UUID instanceId,
-            String credentialCiphertext) {
+            String credentialCiphertext,
+            String idempotencyKey,
+            String requestHash) {
         jdbcTemplate.update(
                 """
-                INSERT INTO operation (id, owner_id, instance_id, operation_type, state, payload)
+                INSERT INTO operation
+                    (id, owner_id, instance_id, operation_type, state, payload,
+                     idempotency_key, request_hash)
                 VALUES (?, ?, ?, 'CREATE_INSTANCE', 'QUEUED',
-                        jsonb_build_object('credentialCiphertext', ?))
+                        jsonb_build_object('credentialCiphertext', ?), ?, ?)
                 """,
                 operationId,
                 ownerId,
                 instanceId,
-                credentialCiphertext);
+                credentialCiphertext,
+                idempotencyKey,
+                requestHash);
     }
 
     public void enqueueInstanceOperation(
@@ -52,20 +59,64 @@ public class OperationRepository {
             UUID ownerId,
             UUID instanceId,
             String operationType,
-            String credentialCiphertext) {
+            String credentialCiphertext,
+            String previousInstanceState,
+            String idempotencyKey,
+            String requestHash) {
         jdbcTemplate.update(
                 """
-                INSERT INTO operation (id, owner_id, instance_id, operation_type, state, payload)
+                INSERT INTO operation
+                    (id, owner_id, instance_id, operation_type, state, payload,
+                     previous_instance_state, idempotency_key, request_hash)
                 VALUES (?, ?, ?, ?, 'QUEUED',
                         CASE WHEN CAST(? AS VARCHAR) IS NULL THEN '{}'::JSONB
-                             ELSE jsonb_build_object('credentialCiphertext', CAST(? AS VARCHAR)) END)
+                             ELSE jsonb_build_object('credentialCiphertext', CAST(? AS VARCHAR)) END,
+                        ?, ?, ?)
                 """,
                 operationId,
                 ownerId,
                 instanceId,
                 operationType,
                 credentialCiphertext,
-                credentialCiphertext);
+                credentialCiphertext,
+                previousInstanceState,
+                idempotencyKey,
+                requestHash);
+    }
+
+    public void lockIdempotencyKey(UUID ownerId, String idempotencyKey) {
+        if (idempotencyKey == null) {
+            return;
+        }
+        jdbcTemplate.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                resultSet -> {
+                    while (resultSet.next()) {
+                        // Consume the lock result within the transaction.
+                    }
+                    return null;
+                },
+                ownerId + ":" + idempotencyKey);
+    }
+
+    public Optional<IdempotentOperation> findIdempotent(UUID ownerId, String idempotencyKey) {
+        if (idempotencyKey == null) {
+            return Optional.empty();
+        }
+        return jdbcTemplate.query(
+                """
+                SELECT id, state, request_hash
+                FROM operation
+                WHERE owner_id = ? AND idempotency_key = ?
+                """,
+                resultSet -> resultSet.next()
+                        ? Optional.of(new IdempotentOperation(
+                                resultSet.getObject("id", UUID.class),
+                                resultSet.getString("state"),
+                                resultSet.getString("request_hash").trim()))
+                        : Optional.empty(),
+                ownerId,
+                idempotencyKey);
     }
 
     public Optional<String> findProvisioningCredential(UUID instanceId) {
@@ -85,58 +136,127 @@ public class OperationRepository {
     }
 
     @Transactional
-    public Optional<OperationJob> claimNext() {
-        List<OperationJob> jobs = jdbcTemplate.query(
+    public Optional<OperationJob> claimNext(String workerId, Duration leaseDuration) {
+        return jdbcTemplate.query(
                 """
                 UPDATE operation
                 SET state = 'RUNNING', attempt_count = attempt_count + 1,
-                    updated_at = CURRENT_TIMESTAMP
+                    worker_id = ?, lease_token = gen_random_uuid(),
+                    lease_until = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
+                    next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
                 WHERE id = (
                     SELECT id
                     FROM operation
-                    WHERE state = 'QUEUED'
+                    WHERE (state = 'QUEUED'
+                           OR (state = 'RETRY_WAIT' AND next_attempt_at <= CURRENT_TIMESTAMP))
+                      AND attempt_count < max_attempts
                       AND operation_type IN ('CREATE_INSTANCE', 'START_INSTANCE', 'STOP_INSTANCE',
                                              'RESTART_INSTANCE', 'DELETE_INSTANCE')
                     ORDER BY created_at, id
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )
-                RETURNING id, instance_id, operation_type,
+                RETURNING id, instance_id, operation_type, previous_instance_state,
+                          lease_token, attempt_count, max_attempts,
                           payload ->> 'credentialCiphertext' AS credential_ciphertext
                 """,
-                (resultSet, rowNumber) -> new OperationJob(
+                resultSet -> resultSet.next()
+                        ? Optional.of(new OperationJob(
+                                resultSet.getObject("id", UUID.class),
+                                resultSet.getObject("instance_id", UUID.class),
+                                resultSet.getString("operation_type"),
+                                resultSet.getString("credential_ciphertext"),
+                                resultSet.getString("previous_instance_state"),
+                                resultSet.getObject("lease_token", UUID.class),
+                                resultSet.getInt("attempt_count"),
+                                resultSet.getInt("max_attempts")))
+                        : Optional.empty(),
+                workerId,
+                leaseDuration.toSeconds());
+    }
+
+    public boolean renewLease(OperationJob operation, String workerId, Duration leaseDuration) {
+        return jdbcTemplate.update(
+                """
+                UPDATE operation
+                SET lease_until = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'RUNNING' AND worker_id = ?
+                  AND lease_token = ? AND lease_until > CURRENT_TIMESTAMP
+                """,
+                leaseDuration.toSeconds(),
+                operation.id(),
+                workerId,
+                operation.leaseToken()) == 1;
+    }
+
+    public boolean markSucceeded(OperationJob operation, String workerId) {
+        return jdbcTemplate.update(
+                """
+                UPDATE operation
+                SET state = 'SUCCEEDED', error_code = NULL, worker_id = NULL,
+                    lease_token = NULL, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'RUNNING' AND worker_id = ?
+                  AND lease_token = ? AND lease_until > CURRENT_TIMESTAMP
+                """,
+                operation.id(),
+                workerId,
+                operation.leaseToken()) == 1;
+    }
+
+    public Optional<Boolean> markRetryOrFailed(OperationJob operation, String workerId, String errorCode) {
+        List<String> states = jdbcTemplate.query(
+                """
+                UPDATE operation
+                SET state = CASE WHEN attempt_count >= max_attempts THEN 'FAILED' ELSE 'RETRY_WAIT' END,
+                    next_attempt_at = CASE WHEN attempt_count >= max_attempts THEN NULL
+                        ELSE CURRENT_TIMESTAMP
+                            + LEAST(300, 5 * power(2, GREATEST(attempt_count - 1, 0))) * INTERVAL '1 second'
+                        END,
+                    error_code = ?, worker_id = NULL, lease_token = NULL, lease_until = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'RUNNING' AND worker_id = ?
+                  AND lease_token = ? AND lease_until > CURRENT_TIMESTAMP
+                RETURNING state
+                """,
+                (resultSet, rowNumber) -> resultSet.getString("state"),
+                errorCode,
+                operation.id(),
+                workerId,
+                operation.leaseToken());
+        return states.stream().findFirst().map("FAILED"::equals);
+    }
+
+    @Transactional
+    public List<RecoveredOperation> recoverExpiredLeases() {
+        return jdbcTemplate.query(
+                """
+                WITH expired AS (
+                    SELECT id
+                    FROM operation
+                    WHERE state = 'RUNNING'
+                      AND (lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE operation o
+                SET state = CASE WHEN o.attempt_count >= o.max_attempts THEN 'FAILED' ELSE 'RETRY_WAIT' END,
+                    next_attempt_at = CASE WHEN o.attempt_count >= o.max_attempts THEN NULL
+                        ELSE CURRENT_TIMESTAMP
+                            + LEAST(300, 5 * power(2, GREATEST(o.attempt_count - 1, 0))) * INTERVAL '1 second'
+                        END,
+                    error_code = 'WORKER_LEASE_EXPIRED', worker_id = NULL,
+                    lease_token = NULL, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                FROM expired
+                WHERE o.id = expired.id
+                RETURNING o.id, o.instance_id, o.operation_type,
+                          o.previous_instance_state, o.state
+                """,
+                (resultSet, rowNumber) -> new RecoveredOperation(
                         resultSet.getObject("id", UUID.class),
                         resultSet.getObject("instance_id", UUID.class),
                         resultSet.getString("operation_type"),
-                        resultSet.getString("credential_ciphertext")));
-        return jobs.stream().findFirst();
-    }
-
-    public void markSucceeded(UUID operationId) {
-        int updated = jdbcTemplate.update(
-                """
-                UPDATE operation
-                SET state = 'SUCCEEDED', error_code = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND state = 'RUNNING'
-                """,
-                operationId);
-        if (updated != 1) {
-            throw new IllegalStateException("The operation could not be marked successful.");
-        }
-    }
-
-    public void markFailed(UUID operationId, String errorCode) {
-        int updated = jdbcTemplate.update(
-                """
-                UPDATE operation
-                SET state = 'FAILED', error_code = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND state = 'RUNNING'
-                """,
-                errorCode,
-                operationId);
-        if (updated != 1) {
-            throw new IllegalStateException("The operation could not be marked failed.");
-        }
+                        resultSet.getString("previous_instance_state"),
+                        resultSet.getString("state")));
     }
 
     public Optional<OperationRecord> findByIdAndOwnerId(UUID operationId, UUID ownerId) {

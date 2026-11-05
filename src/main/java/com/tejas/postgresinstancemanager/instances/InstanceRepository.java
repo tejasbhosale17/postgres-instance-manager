@@ -6,8 +6,8 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.StringJoiner;
 import java.util.UUID;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class InstanceRepository {
@@ -46,6 +46,22 @@ public class InstanceRepository {
     public List<InstanceRecord> findAll() {
         return jdbcTemplate.query(
                 "SELECT " + COLUMNS + " FROM managed_instance ORDER BY created_at DESC, id",
+                ROW_MAPPER);
+    }
+
+    public List<InstanceRecord> findStableInstancesForReconciliation() {
+        return jdbcTemplate.query(
+                """
+                SELECT %s
+                FROM managed_instance i
+                WHERE state IN ('READY', 'STOPPED')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM operation o
+                      WHERE o.instance_id = i.id
+                        AND o.state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')
+                  )
+                ORDER BY updated_at, id
+                  """.formatted(COLUMNS),
                 ROW_MAPPER);
     }
 
@@ -105,40 +121,92 @@ public class InstanceRepository {
                 instanceId);
     }
 
-    public void beginOperation(
+    @Transactional
+    public String beginOperation(
             UUID instanceId,
             UUID ownerId,
             boolean administrator,
             List<String> allowedStates,
             String nextState) {
-        StringJoiner stateParameters = new StringJoiner(", ");
-        allowedStates.forEach(ignored -> stateParameters.add("?"));
-        String sql = """
-                UPDATE managed_instance
-                SET state = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """ + (administrator ? "" : " AND owner_id = ?")
-                + " AND state IN (" + stateParameters + ")";
-        Object[] parameters = new Object[2 + (administrator ? 0 : 1) + allowedStates.size()];
-        int index = 0;
-        parameters[index++] = nextState;
-        parameters[index++] = instanceId;
-        if (!administrator) {
-            parameters[index++] = ownerId;
-        }
-        for (String allowedState : allowedStates) {
-            parameters[index++] = allowedState;
-        }
-        if (jdbcTemplate.update(sql, parameters) == 1) {
-            return;
-        }
-        Optional<InstanceRecord> instance = administrator
-                ? findById(instanceId)
-                : findByIdAndOwnerId(instanceId, ownerId);
-        if (instance.isEmpty()) {
+        List<String> currentStates = jdbcTemplate.query(
+                """
+                SELECT state FROM managed_instance
+                WHERE id = ? AND (? OR owner_id = ?)
+                FOR UPDATE
+                """,
+                (resultSet, rowNumber) -> resultSet.getString("state"),
+                instanceId,
+                administrator,
+                ownerId);
+        if (currentStates.isEmpty()) {
             throw new com.tejas.postgresinstancemanager.api.ResourceNotFoundException();
         }
-        throw new InstanceStateConflictException();
+        String currentState = currentStates.get(0);
+        if (!allowedStates.contains(currentState)) {
+            throw new InstanceStateConflictException();
+        }
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE managed_instance
+                SET state = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = ?
+                """,
+                nextState,
+                instanceId,
+                currentState);
+        if (updated != 1) {
+            throw new IllegalStateException("The instance state changed while queuing its operation.");
+        }
+        return currentState;
+    }
+
+    public void restoreState(UUID instanceId, String previousState) {
+        if (previousState == null) {
+            markFailed(instanceId);
+            return;
+        }
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE managed_instance
+                SET state = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state IN
+                    ('PROVISIONING', 'STARTING', 'STOPPING', 'RESTARTING', 'DELETING')
+                """,
+                previousState,
+                instanceId);
+        requireLifecycleUpdate(updated);
+    }
+
+    public void reconcileState(UUID instanceId, String state, int hostPort) {
+        jdbcTemplate.update(
+                """
+                UPDATE managed_instance i
+                SET state = ?, host_port = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE i.id = ? AND i.state IN ('READY', 'STOPPED')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM operation o
+                      WHERE o.instance_id = i.id
+                        AND o.state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')
+                  )
+                """,
+                state,
+                hostPort,
+                instanceId);
+    }
+
+    public void markMissingManagedContainer(UUID instanceId) {
+        jdbcTemplate.update(
+                """
+                UPDATE managed_instance i
+                SET state = 'FAILED', updated_at = CURRENT_TIMESTAMP
+                WHERE i.id = ? AND i.state IN ('READY', 'STOPPED')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM operation o
+                      WHERE o.instance_id = i.id
+                        AND o.state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')
+                  )
+                """,
+                instanceId);
     }
 
     public void markReadyAfterLifecycle(UUID instanceId, int hostPort) {

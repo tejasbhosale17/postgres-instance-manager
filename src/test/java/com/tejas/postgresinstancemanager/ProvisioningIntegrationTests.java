@@ -7,6 +7,7 @@ import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.command.InspectVolumeResponse;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Container;
+import com.tejas.postgresinstancemanager.worker.InstanceReconciler;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +40,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -75,17 +77,23 @@ class ProvisioningIntegrationTests {
     @Autowired
     private DockerClient dockerClient;
 
+    @Autowired
+    private InstanceReconciler instanceReconciler;
+
     @Test
     void provisionsLabeledPostgresWithPersistentVolumeAndEncryptedCredentials() throws Exception {
         UUID instanceId = null;
         String databasePassword = "postgres-test-" + UUID.randomUUID();
         String token = loginAdministrator();
         try {
+            String createRequest = objectMapper.writeValueAsString(
+                    Map.of("name", "integration-postgres", "databasePassword", databasePassword));
+            String createIdempotencyKey = "integration-create-" + UUID.randomUUID();
             String acceptedResponse = mockMvc.perform(post("/api/instances")
                             .header("Authorization", bearer(token))
+                            .header("Idempotency-Key", createIdempotencyKey)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(
-                                    Map.of("name", "integration-postgres", "databasePassword", databasePassword))))
+                            .content(createRequest))
                     .andExpect(status().isAccepted())
                     .andReturn()
                     .getResponse()
@@ -93,6 +101,20 @@ class ProvisioningIntegrationTests {
             JsonNode accepted = objectMapper.readTree(acceptedResponse);
             UUID operationId = UUID.fromString(accepted.get("operationId").asText());
             assertThat(acceptedResponse).doesNotContain(databasePassword);
+            mockMvc.perform(post("/api/instances")
+                            .header("Authorization", bearer(token))
+                            .header("Idempotency-Key", createIdempotencyKey)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(createRequest))
+                    .andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.operationId").value(operationId.toString()));
+            mockMvc.perform(post("/api/instances")
+                            .header("Authorization", bearer(token))
+                            .header("Idempotency-Key", createIdempotencyKey)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(
+                                    Map.of("name", "different-name", "databasePassword", databasePassword))))
+                    .andExpect(status().isConflict());
 
             instanceId = jdbcTemplate.queryForObject(
                     "SELECT instance_id FROM operation WHERE id = ?",
@@ -120,8 +142,16 @@ class ProvisioningIntegrationTests {
             verifyDockerLabels(instanceId);
             verifyDatabaseConnection(hostPort, databasePassword);
 
-            assertThat(requestLifecycle(token, post("/api/instances/{id}/stop", instanceId))
+            String stopIdempotencyKey = "integration-stop-" + UUID.randomUUID();
+            JsonNode stopOperation = requestLifecycle(
+                    token, post("/api/instances/{id}/stop", instanceId), stopIdempotencyKey);
+            assertThat(stopOperation
                     .get("state").asText()).isEqualTo("SUCCEEDED");
+            mockMvc.perform(post("/api/instances/{id}/stop", instanceId)
+                            .header("Authorization", bearer(token))
+                            .header("Idempotency-Key", stopIdempotencyKey))
+                    .andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.operationId").value(stopOperation.get("id").asText()));
             assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("STOPPED");
             mockMvc.perform(post("/api/instances/{id}/stop", instanceId)
                             .header("Authorization", bearer(token)))
@@ -136,6 +166,20 @@ class ProvisioningIntegrationTests {
             assertThat(requestLifecycle(token, post("/api/instances/{id}/restart", instanceId))
                     .get("state").asText()).isEqualTo("SUCCEEDED");
             assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("READY");
+
+            List<Container> managedContainers = dockerClient.listContainersCmd()
+                    .withShowAll(true)
+                    .withLabelFilter(Map.of(
+                            PLATFORM_LABEL, PLATFORM_VALUE,
+                            INSTANCE_LABEL, instanceId.toString(),
+                            RESOURCE_LABEL, "container"))
+                    .exec();
+            assertThat(managedContainers).hasSize(1);
+            dockerClient.stopContainerCmd(managedContainers.get(0).getId()).withTimeout(5).exec();
+            instanceReconciler.reconcileInstances();
+            assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("STOPPED");
+            assertThat(requestLifecycle(token, post("/api/instances/{id}/start", instanceId))
+                    .get("state").asText()).isEqualTo("SUCCEEDED");
 
             mockMvc.perform(delete("/api/instances/{id}", instanceId)
                             .header("Authorization", bearer(token))
@@ -192,7 +236,18 @@ class ProvisioningIntegrationTests {
     private JsonNode requestLifecycle(
             String token,
             org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request) throws Exception {
-        String response = mockMvc.perform(request.header("Authorization", bearer(token)))
+        return requestLifecycle(token, request, null);
+    }
+
+    private JsonNode requestLifecycle(
+            String token,
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request,
+            String idempotencyKey) throws Exception {
+        request.header("Authorization", bearer(token));
+        if (idempotencyKey != null) {
+            request.header("Idempotency-Key", idempotencyKey);
+        }
+        String response = mockMvc.perform(request)
                 .andExpect(status().isAccepted())
                 .andReturn()
                 .getResponse()
