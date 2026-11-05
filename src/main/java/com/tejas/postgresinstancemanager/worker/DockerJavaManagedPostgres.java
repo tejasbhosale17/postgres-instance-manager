@@ -60,7 +60,6 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
                     dockerClient.startContainerCmd(containerId).exec();
                 }
             }
-
             int hostPort = getHostPort(containerId);
             waitUntilReady(hostPort, databasePassword);
             return new ProvisionedPostgres(containerId, volumeName, hostPort);
@@ -73,6 +72,103 @@ public class DockerJavaManagedPostgres implements ManagedPostgresDocker {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new PostgresProvisioningException("PROVISIONING_INTERRUPTED", exception);
+        }
+    }
+
+    @Override
+    public int start(UUID instanceId, String databasePassword) {
+        try {
+            String containerId = requireManagedContainer(instanceId);
+            InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
+            if (!Boolean.TRUE.equals(container.getState().getRunning())) {
+                dockerClient.startContainerCmd(containerId).exec();
+            }
+            int hostPort = getHostPort(containerId);
+            waitUntilReady(hostPort, databasePassword);
+            return hostPort;
+        } catch (DockerException exception) {
+            throw new PostgresProvisioningException("DOCKER_API_ERROR", exception);
+        } catch (SQLException exception) {
+            throw new PostgresProvisioningException("POSTGRES_READINESS_FAILED", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new PostgresProvisioningException("PROVISIONING_INTERRUPTED", exception);
+        }
+    }
+
+    @Override
+    public void stop(UUID instanceId) {
+        try {
+            String containerId = requireManagedContainer(instanceId);
+            InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
+            if (Boolean.TRUE.equals(container.getState().getRunning())) {
+                dockerClient.stopContainerCmd(containerId).withTimeout(10).exec();
+            }
+        } catch (DockerException exception) {
+            throw new PostgresProvisioningException("DOCKER_API_ERROR", exception);
+        }
+    }
+
+    @Override
+    public int restart(UUID instanceId, String databasePassword) {
+        try {
+            String containerId = requireManagedContainer(instanceId);
+            InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
+            if (Boolean.TRUE.equals(container.getState().getRunning())) {
+                dockerClient.restartContainerCmd(containerId).withTimeout(10).exec();
+            } else {
+                dockerClient.startContainerCmd(containerId).exec();
+            }
+            int hostPort = getHostPort(containerId);
+            waitUntilReady(hostPort, databasePassword);
+            return hostPort;
+        } catch (DockerException exception) {
+            throw new PostgresProvisioningException("DOCKER_API_ERROR", exception);
+        } catch (SQLException exception) {
+            throw new PostgresProvisioningException("POSTGRES_READINESS_FAILED", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new PostgresProvisioningException("PROVISIONING_INTERRUPTED", exception);
+        }
+    }
+
+    @Override
+    public void delete(UUID instanceId) {
+        try {
+            String containerId = findOwnedContainer(instanceId);
+            if (containerId != null) {
+                ensureExistingContainerIsManaged(containerId, "pim-pg-data-" + instanceId);
+                InspectContainerResponse container = dockerClient.inspectContainerCmd(containerId).exec();
+                if (Boolean.TRUE.equals(container.getState().getRunning())) {
+                    dockerClient.stopContainerCmd(containerId).withTimeout(10).exec();
+                }
+                dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            }
+            removeOwnedVolume(instanceId);
+        } catch (DockerException exception) {
+            throw new PostgresProvisioningException("DOCKER_API_ERROR", exception);
+        }
+    }
+
+    private String requireManagedContainer(UUID instanceId) {
+        String containerId = findOwnedContainer(instanceId);
+        if (containerId == null) {
+            throw new PostgresProvisioningException("MANAGED_CONTAINER_NOT_FOUND");
+        }
+        ensureExistingContainerIsManaged(containerId, "pim-pg-data-" + instanceId);
+        return containerId;
+    }
+
+    private void removeOwnedVolume(UUID instanceId) {
+        String volumeName = "pim-pg-data-" + instanceId;
+        try {
+            InspectVolumeResponse volume = dockerClient.inspectVolumeCmd(volumeName).exec();
+            if (!hasExpectedLabels(volume.getLabels(), instanceId, "volume")) {
+                throw new PostgresProvisioningException("VOLUME_LABEL_MISMATCH");
+            }
+            dockerClient.removeVolumeCmd(volumeName).exec();
+        } catch (NotFoundException ignored) {
+            // A prior delete may have removed the owned volume before the operation was retried.
         }
     }
 

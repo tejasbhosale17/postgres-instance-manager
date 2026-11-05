@@ -123,7 +123,13 @@ class AuthenticationAndOwnershipIntegrationTests {
     @Test
     void usersCannotReadAnotherOwnersInstancesOrOperations() throws Exception {
         UUID owner = register("resource-owner", "resource-owner-password");
-        String otherUserToken = login("resource-reader", registerAndGetPassword("resource-reader"));
+        String otherUserPassword = registerAndGetPassword("resource-reader");
+        UUID otherUser = jdbcTemplate.queryForObject(
+                "SELECT id FROM app_user WHERE username = ?",
+                UUID.class,
+                "resource-reader");
+        jdbcTemplate.update("UPDATE app_user SET role = 'OPERATOR' WHERE id = ?", otherUser);
+        String otherUserToken = login("resource-reader", otherUserPassword);
         UUID instanceId = UUID.randomUUID();
         UUID operationId = UUID.randomUUID();
 
@@ -156,6 +162,13 @@ class AuthenticationAndOwnershipIntegrationTests {
         mockMvc.perform(get("/api/operations/{id}", operationId)
                         .header("Authorization", bearer(otherUserToken)))
                 .andExpect(status().isNotFound());
+        mockMvc.perform(post("/api/instances/{id}/stop", instanceId)
+                        .header("Authorization", bearer(otherUserToken)))
+                .andExpect(status().isNotFound());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM managed_instance WHERE id = ?",
+                String.class,
+                instanceId)).isEqualTo("READY");
         mockMvc.perform(get("/api/instances")
                         .header("Authorization", bearer(otherUserToken)))
                 .andExpect(status().isOk())

@@ -6,6 +6,7 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.StringJoiner;
 import java.util.UUID;
 
 @Repository
@@ -98,8 +99,84 @@ public class InstanceRepository {
                 """
                 UPDATE managed_instance
                 SET state = 'FAILED', updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND state = 'PROVISIONING'
+                WHERE id = ? AND state IN
+                    ('PROVISIONING', 'STARTING', 'STOPPING', 'RESTARTING', 'DELETING')
                 """,
                 instanceId);
+    }
+
+    public void beginOperation(
+            UUID instanceId,
+            UUID ownerId,
+            boolean administrator,
+            List<String> allowedStates,
+            String nextState) {
+        StringJoiner stateParameters = new StringJoiner(", ");
+        allowedStates.forEach(ignored -> stateParameters.add("?"));
+        String sql = """
+                UPDATE managed_instance
+                SET state = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """ + (administrator ? "" : " AND owner_id = ?")
+                + " AND state IN (" + stateParameters + ")";
+        Object[] parameters = new Object[2 + (administrator ? 0 : 1) + allowedStates.size()];
+        int index = 0;
+        parameters[index++] = nextState;
+        parameters[index++] = instanceId;
+        if (!administrator) {
+            parameters[index++] = ownerId;
+        }
+        for (String allowedState : allowedStates) {
+            parameters[index++] = allowedState;
+        }
+        if (jdbcTemplate.update(sql, parameters) == 1) {
+            return;
+        }
+        Optional<InstanceRecord> instance = administrator
+                ? findById(instanceId)
+                : findByIdAndOwnerId(instanceId, ownerId);
+        if (instance.isEmpty()) {
+            throw new com.tejas.postgresinstancemanager.api.ResourceNotFoundException();
+        }
+        throw new InstanceStateConflictException();
+    }
+
+    public void markReadyAfterLifecycle(UUID instanceId, int hostPort) {
+        updateLifecycleState(instanceId, "READY", hostPort);
+    }
+
+    public void markStopped(UUID instanceId) {
+        updateLifecycleState(instanceId, "STOPPED", null);
+    }
+
+    public void markDeleted(UUID instanceId) {
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE managed_instance
+                SET state = 'DELETED', container_id = NULL, volume_name = NULL, host_port = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'DELETING'
+                """,
+                instanceId);
+        requireLifecycleUpdate(updated);
+    }
+
+    private void updateLifecycleState(UUID instanceId, String state, Integer hostPort) {
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE managed_instance
+                SET state = ?, host_port = COALESCE(?, host_port), updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state IN ('STARTING', 'STOPPING', 'RESTARTING')
+                """,
+                state,
+                hostPort,
+                instanceId);
+        requireLifecycleUpdate(updated);
+    }
+
+    private void requireLifecycleUpdate(int updated) {
+        if (updated != 1) {
+            throw new IllegalStateException("The instance lifecycle state could not be updated.");
+        }
     }
 }

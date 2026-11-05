@@ -47,6 +47,43 @@ public class OperationRepository {
                 credentialCiphertext);
     }
 
+    public void enqueueInstanceOperation(
+            UUID operationId,
+            UUID ownerId,
+            UUID instanceId,
+            String operationType,
+            String credentialCiphertext) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO operation (id, owner_id, instance_id, operation_type, state, payload)
+                VALUES (?, ?, ?, ?, 'QUEUED',
+                        CASE WHEN CAST(? AS VARCHAR) IS NULL THEN '{}'::JSONB
+                             ELSE jsonb_build_object('credentialCiphertext', CAST(? AS VARCHAR)) END)
+                """,
+                operationId,
+                ownerId,
+                instanceId,
+                operationType,
+                credentialCiphertext,
+                credentialCiphertext);
+    }
+
+    public Optional<String> findProvisioningCredential(UUID instanceId) {
+        return jdbcTemplate.query(
+                """
+                SELECT payload ->> 'credentialCiphertext'
+                FROM operation
+                WHERE instance_id = ? AND operation_type = 'CREATE_INSTANCE'
+                  AND state = 'SUCCEEDED'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                resultSet -> resultSet.next()
+                        ? Optional.ofNullable(resultSet.getString(1))
+                        : Optional.empty(),
+                instanceId);
+    }
+
     @Transactional
     public Optional<OperationJob> claimNext() {
         List<OperationJob> jobs = jdbcTemplate.query(
@@ -57,16 +94,20 @@ public class OperationRepository {
                 WHERE id = (
                     SELECT id
                     FROM operation
-                    WHERE state = 'QUEUED' AND operation_type = 'CREATE_INSTANCE'
+                    WHERE state = 'QUEUED'
+                      AND operation_type IN ('CREATE_INSTANCE', 'START_INSTANCE', 'STOP_INSTANCE',
+                                             'RESTART_INSTANCE', 'DELETE_INSTANCE')
                     ORDER BY created_at, id
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )
-                RETURNING id, instance_id, payload ->> 'credentialCiphertext' AS credential_ciphertext
+                RETURNING id, instance_id, operation_type,
+                          payload ->> 'credentialCiphertext' AS credential_ciphertext
                 """,
                 (resultSet, rowNumber) -> new OperationJob(
                         resultSet.getObject("id", UUID.class),
                         resultSet.getObject("instance_id", UUID.class),
+                        resultSet.getString("operation_type"),
                         resultSet.getString("credential_ciphertext")));
         return jobs.stream().findFirst();
     }

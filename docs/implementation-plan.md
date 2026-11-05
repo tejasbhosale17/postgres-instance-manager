@@ -18,7 +18,7 @@ metadata database on localhost for trusted local development only.
   and authorization tests.
 - [x] 2. Add durable asynchronous provisioning, Docker integration, readiness
   checks, persistent volumes, and a working create flow.
-- [ ] 3. Add instance lifecycle operations and explicit persistent-data deletion.
+- [x] 3. Add instance lifecycle operations and explicit persistent-data deletion.
 - [ ] 4. Add idempotency, concurrent claims, leases, bounded retries, recovery,
   and reconciliation.
 - [ ] 5. Add health, metrics, correlation IDs, audit events, and activity views.

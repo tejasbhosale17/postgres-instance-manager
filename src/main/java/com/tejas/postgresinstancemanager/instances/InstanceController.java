@@ -5,10 +5,11 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -54,6 +55,43 @@ public class InstanceController {
                 ? instanceRepository.findById(instanceId)
                 : instanceRepository.findByIdAndOwnerId(instanceId, ownerId))
                 .orElseThrow(ResourceNotFoundException::new);
+    }
+
+    @PostMapping("/{instanceId}/start")
+    public ResponseEntity<OperationAccepted> start(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID instanceId) {
+        return accepted(instanceService.requestStart(
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+    }
+
+    @PostMapping("/{instanceId}/stop")
+    public ResponseEntity<OperationAccepted> stop(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID instanceId) {
+        return accepted(instanceService.requestStop(
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+    }
+
+    @PostMapping("/{instanceId}/restart")
+    public ResponseEntity<OperationAccepted> restart(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID instanceId) {
+        return accepted(instanceService.requestRestart(
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+    }
+
+    @DeleteMapping("/{instanceId}")
+    public ResponseEntity<OperationAccepted> delete(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID instanceId,
+            @Valid @RequestBody DeleteInstanceRequest request) {
+        return accepted(instanceService.requestDelete(
+                UUID.fromString(jwt.getSubject()), isAdministrator(jwt), instanceId));
+    }
+
+    private ResponseEntity<OperationAccepted> accepted(OperationAccepted operation) {
+        return ResponseEntity.accepted().body(operation);
     }
 
     private boolean isAdministrator(Jwt jwt) {

@@ -51,5 +51,24 @@
 - **Limitations:** Lifecycle operations and explicit data deletion,
   idempotency, job leases/retries/recovery/reconciliation, and backup/restore
   are deferred to later milestones.
-- **Next:** Milestone 3 — instance lifecycle operations and explicit
-  persistent-data deletion.
+- **Next:** Milestone 4 — idempotency, concurrent claims, leases, bounded
+  retries, recovery, and reconciliation.
+
+## Milestone 3 — Instance lifecycle and data deletion
+
+- **Status:** Implemented; live Docker integration verification completed.
+- **Completed:** Added asynchronous start, stop, restart, and delete endpoints
+  with state-checked transitions and owner/admin authorization. Start and
+  restart wait until PostgreSQL accepts authenticated connections. Deletion
+  requires `confirmDataDeletion: true`, removes only Docker resources bearing
+  the instance's expected ownership labels, and records a `DELETED` metadata
+  tombstone while allowing the owner to reuse the name.
+- **Validation:** The Docker-backed integration test provisions an instance,
+  verifies stop/start/restart, confirms existing database data survives the
+  lifecycle transitions, rejects an invalid state transition and an unconfirmed
+  delete, and verifies confirmed deletion removes the managed container and
+  volume.
+- **Limitations:** Durable operation leases, bounded retries, recovery, and
+  reconciliation remain in Milestone 4.
+- **Next:** Milestone 4 — idempotency, concurrent claims, leases, bounded
+  retries, recovery, and reconciliation.

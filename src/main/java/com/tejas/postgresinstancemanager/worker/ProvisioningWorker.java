@@ -38,23 +38,53 @@ public class ProvisioningWorker {
 
     private void provision(OperationJob operation) {
         try {
-            String password = credentialEncryptionService.decrypt(
-                    operation.instanceId(),
-                    operation.credentialCiphertext());
-            ProvisionedPostgres postgres = managedPostgresDocker.provision(
-                    operation.instanceId(),
-                    password);
-            instanceRepository.markReady(
-                    operation.instanceId(),
-                    postgres.containerId(),
-                    postgres.volumeName(),
-                    postgres.hostPort());
+            switch (operation.operationType()) {
+                case "CREATE_INSTANCE" -> create(operation);
+                case "START_INSTANCE" -> {
+                    int hostPort = managedPostgresDocker.start(
+                            operation.instanceId(), decryptCredential(operation));
+                    instanceRepository.markReadyAfterLifecycle(operation.instanceId(), hostPort);
+                }
+                case "STOP_INSTANCE" -> {
+                    managedPostgresDocker.stop(operation.instanceId());
+                    instanceRepository.markStopped(operation.instanceId());
+                }
+                case "RESTART_INSTANCE" -> {
+                    int hostPort = managedPostgresDocker.restart(
+                            operation.instanceId(), decryptCredential(operation));
+                    instanceRepository.markReadyAfterLifecycle(operation.instanceId(), hostPort);
+                }
+                case "DELETE_INSTANCE" -> {
+                    managedPostgresDocker.delete(operation.instanceId());
+                    instanceRepository.markDeleted(operation.instanceId());
+                }
+                default -> throw new IllegalStateException(
+                        "Unsupported operation type: " + operation.operationType());
+            }
             operationRepository.markSucceeded(operation.id());
         } catch (CredentialEncryptionException exception) {
             fail(operation, "CREDENTIAL_DECRYPTION_FAILED");
         } catch (PostgresProvisioningException exception) {
             fail(operation, exception.errorCode());
         }
+    }
+
+    private void create(OperationJob operation) {
+        String password = decryptCredential(operation);
+        ProvisionedPostgres postgres = managedPostgresDocker.provision(
+                operation.instanceId(),
+                password);
+        instanceRepository.markReady(
+                operation.instanceId(),
+                postgres.containerId(),
+                postgres.volumeName(),
+                postgres.hostPort());
+    }
+
+    private String decryptCredential(OperationJob operation) {
+        return credentialEncryptionService.decrypt(
+                operation.instanceId(),
+                operation.credentialCiphertext());
     }
 
     private void fail(OperationJob operation, String errorCode) {

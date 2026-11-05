@@ -33,8 +33,10 @@ import static com.tejas.postgresinstancemanager.worker.DockerJavaManagedPostgres
 import static com.tejas.postgresinstancemanager.worker.DockerJavaManagedPostgres.PLATFORM_VALUE;
 import static com.tejas.postgresinstancemanager.worker.DockerJavaManagedPostgres.RESOURCE_LABEL;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -117,6 +119,45 @@ class ProvisioningIntegrationTests {
             assertThat(storedPayload).doesNotContain(databasePassword);
             verifyDockerLabels(instanceId);
             verifyDatabaseConnection(hostPort, databasePassword);
+
+            assertThat(requestLifecycle(token, post("/api/instances/{id}/stop", instanceId))
+                    .get("state").asText()).isEqualTo("SUCCEEDED");
+            assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("STOPPED");
+            mockMvc.perform(post("/api/instances/{id}/stop", instanceId)
+                            .header("Authorization", bearer(token)))
+                    .andExpect(status().isConflict());
+
+            assertThat(requestLifecycle(token, post("/api/instances/{id}/start", instanceId))
+                    .get("state").asText()).isEqualTo("SUCCEEDED");
+            JsonNode started = getInstance(token, instanceId);
+            assertThat(started.get("state").asText()).isEqualTo("READY");
+            verifyDatabaseConnection(started.get("hostPort").asInt(), databasePassword);
+
+            assertThat(requestLifecycle(token, post("/api/instances/{id}/restart", instanceId))
+                    .get("state").asText()).isEqualTo("SUCCEEDED");
+            assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("READY");
+
+            mockMvc.perform(delete("/api/instances/{id}", instanceId)
+                            .header("Authorization", bearer(token))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"confirmDataDeletion\":false}"))
+                    .andExpect(status().isBadRequest());
+            assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("READY");
+
+            assertThat(requestLifecycle(token, delete("/api/instances/{id}", instanceId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"confirmDataDeletion\":true}"))
+                    .get("state").asText()).isEqualTo("SUCCEEDED");
+            JsonNode deleted = getInstance(token, instanceId);
+            assertThat(deleted.get("state").asText()).isEqualTo("DELETED");
+            assertThat(deleted.get("hostPort").isNull()).isTrue();
+            UUID deletedInstanceId = instanceId;
+            assertThat(dockerClient.listContainersCmd()
+                    .withShowAll(true)
+                    .withLabelFilter(Map.of(INSTANCE_LABEL, deletedInstanceId.toString()))
+                    .exec()).isEmpty();
+            assertThatThrownBy(() -> dockerClient.inspectVolumeCmd("pim-pg-data-" + deletedInstanceId).exec())
+                    .isInstanceOf(NotFoundException.class);
         } finally {
             if (instanceId != null) {
                 removeOnlyThisTestInstance(instanceId);
@@ -148,6 +189,27 @@ class ProvisioningIntegrationTests {
         return operation;
     }
 
+    private JsonNode requestLifecycle(
+            String token,
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request) throws Exception {
+        String response = mockMvc.perform(request.header("Authorization", bearer(token)))
+                .andExpect(status().isAccepted())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        UUID operationId = UUID.fromString(objectMapper.readTree(response).get("operationId").asText());
+        return awaitOperation(token, operationId);
+    }
+
+    private JsonNode getInstance(String token, UUID instanceId) throws Exception {
+        return objectMapper.readTree(mockMvc.perform(get("/api/instances/{id}", instanceId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+    }
+
     private void verifyDockerLabels(UUID instanceId) {
         Map<String, String> containerLabels = Map.of(
                 PLATFORM_LABEL, PLATFORM_VALUE,
@@ -177,8 +239,10 @@ class ProvisioningIntegrationTests {
         String url = "jdbc:postgresql://127.0.0.1:" + hostPort + "/postgres?connectTimeout=3";
         try (Connection connection = DriverManager.getConnection(url, "postgres", password);
              Statement statement = connection.createStatement()) {
-            statement.execute("CREATE TABLE provisioning_probe (value INTEGER NOT NULL)");
-            statement.execute("INSERT INTO provisioning_probe (value) VALUES (42)");
+            statement.execute("CREATE TABLE IF NOT EXISTS provisioning_probe (value INTEGER NOT NULL)");
+            statement.execute(
+                    "INSERT INTO provisioning_probe (value) SELECT 42 "
+                            + "WHERE NOT EXISTS (SELECT 1 FROM provisioning_probe)");
             try (ResultSet resultSet = statement.executeQuery("SELECT value FROM provisioning_probe")) {
                 assertThat(resultSet.next()).isTrue();
                 assertThat(resultSet.getInt(1)).isEqualTo(42);

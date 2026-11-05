@@ -79,7 +79,11 @@ Passwords are stored as PBKDF2 hashes. API responses omit password hashes.
 | `POST` | `/api/auth/register` | Public; creates a viewer |
 | `POST` | `/api/auth/login` | Public |
 | `GET` | `/api/auth/me` | Authenticated |
-| `POST` | `/api/instances` | Authenticated; queues provisioning |
+| `POST` | `/api/instances` | Operator or administrator; queues provisioning |
+| `POST` | `/api/instances/{id}/start` | Owning operator or administrator; queues start |
+| `POST` | `/api/instances/{id}/stop` | Owning operator or administrator; queues stop |
+| `POST` | `/api/instances/{id}/restart` | Owning operator or administrator; queues restart |
+| `DELETE` | `/api/instances/{id}` | Owning operator or administrator; explicit data-deletion confirmation required |
 | `GET` | `/api/instances` | Authenticated; own records, or all for administrators |
 | `GET` | `/api/instances/{id}` | Owner or administrator |
 | `GET` | `/api/operations/{id}` | Owner or administrator |
@@ -106,6 +110,26 @@ The instance response includes its state, database username, and localhost host
 port; the password is never returned. Non-administrators receive `404` when
 requesting another owner's instance or operation, avoiding resource-existence
 disclosure. Validation and API errors use `application/problem+json`.
+
+Start, stop, and restart are also asynchronous and return an operation ID. A
+start is valid only for a stopped instance, stop only for a ready instance, and
+restart for a ready or stopped instance. Requests that do not match the current
+state return `409 Conflict`.
+
+Deleting an instance permanently removes its Docker container and PostgreSQL
+data volume. It requires an explicit confirmation in the request body:
+
+```powershell
+Invoke-RestMethod -Method Delete `
+  -Uri "http://127.0.0.1:8080/api/instances/$instanceId" `
+  -Headers @{ Authorization = "Bearer $token" } `
+  -ContentType 'application/json' `
+  -Body '{"confirmDataDeletion":true}'
+```
+
+Deletion runs asynchronously; poll the returned operation as above. The
+instance remains as a `DELETED` metadata record, and its name may be reused.
+Omitting the confirmation or setting it to `false` is rejected with HTTP 400.
 
 The application binds to localhost by default. Docker access is privileged:
 anyone able to control the Docker daemon can control containers and host
