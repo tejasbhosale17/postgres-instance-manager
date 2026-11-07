@@ -8,6 +8,8 @@ import com.tejas.postgresinstancemanager.instances.InstanceNameAlreadyExistsExce
 import com.tejas.postgresinstancemanager.instances.InstanceStateConflictException;
 import com.tejas.postgresinstancemanager.instances.IdempotencyKeyConflictException;
 import com.tejas.postgresinstancemanager.instances.InvalidIdempotencyKeyException;
+import com.tejas.postgresinstancemanager.instances.InvalidDataReplacementConfirmationException;
+import com.tejas.postgresinstancemanager.backups.BackupArtifactUnavailableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -65,6 +67,18 @@ public class ApiExceptionHandler {
     ResponseEntity<ProblemDetail> handleInvalidIdempotencyKey() {
         return response(HttpStatus.BAD_REQUEST, "Invalid Idempotency-Key",
                 "The Idempotency-Key must contain 1 to 255 nonblank characters.");
+    }
+
+    @ExceptionHandler(InvalidDataReplacementConfirmationException.class)
+    ResponseEntity<ProblemDetail> handleInvalidDataReplacementConfirmation() {
+        return response(HttpStatus.BAD_REQUEST, "Confirmation required",
+                "Set confirmDataReplacement to true to replace the target instance database.");
+    }
+
+    @ExceptionHandler(BackupArtifactUnavailableException.class)
+    ResponseEntity<ProblemDetail> handleBackupArtifactUnavailable() {
+        return response(HttpStatus.GONE, "Backup unavailable",
+                "The backup artifact is missing or failed its integrity check.");
     }
 
     @ExceptionHandler(InvalidCredentialsException.class)

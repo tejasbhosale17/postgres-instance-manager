@@ -116,3 +116,25 @@
 - **Limitations:** Metrics are in-process and reset on restart; durable audit
   retention/export remains an operational responsibility.
 - **Next:** Milestone 6 — asynchronous logical backup and verified restore.
+
+## Milestone 6 — Logical backup and verified restore
+
+- **Status:** Implemented; live Docker/PostgreSQL integration verification
+  completed.
+- **Completed:** Added asynchronous logical backups of the managed `postgres`
+  database using custom-format archives written atomically to the configurable
+  application-host `BACKUP_DIRECTORY`. Backup records include a checksum and
+  byte count; archive validity is checked before marking a backup ready.
+  Added owner/admin-scoped backup metadata and content download APIs.
+  Asynchronous restore requires `confirmDataReplacement: true`, verifies the
+  archive and restores it into a temporary database in a single transaction,
+  checks the restored database over JDBC, then swaps it into place. Failed
+  staging preserves the prior database. Backup files survive instance deletion.
+- **Validation:** `.\mvnw.cmd -B test` passed with all tests executed,
+  including a Docker-backed create → backup → mutate → confirmed restore
+  scenario that verifies database data returns to its backed-up value.
+- **Limitations:** Archives contain plaintext database contents in local
+  storage. Encryption, remote replication, automated retention, and recovery
+  across a lost application-host directory are not provided.
+- **Next:** Milestone 7 — CI, end-to-end/failure-injection scenarios, and
+  reproducible measurements.

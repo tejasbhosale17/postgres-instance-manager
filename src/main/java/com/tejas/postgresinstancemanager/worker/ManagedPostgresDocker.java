@@ -2,6 +2,7 @@ package com.tejas.postgresinstancemanager.worker;
 
 import java.util.UUID;
 import java.util.Optional;
+import java.nio.file.Path;
 
 public interface ManagedPostgresDocker {
 
@@ -16,4 +17,8 @@ public interface ManagedPostgresDocker {
     void delete(UUID instanceId);
 
     Optional<ManagedPostgresStatus> inspect(UUID instanceId, int currentHostPort);
+
+    void createLogicalBackup(UUID instanceId, String databasePassword, Path destination);
+
+    void restoreLogicalBackup(UUID instanceId, String databasePassword, int hostPort, Path archive);
 }

@@ -42,12 +42,13 @@ public class OperationRepository {
         jdbcTemplate.update(
                 """
                 INSERT INTO operation
-                    (id, owner_id, instance_id, operation_type, state, payload,
+                    (id, owner_id, requester_id, instance_id, operation_type, state, payload,
                      idempotency_key, request_hash, correlation_id)
-                VALUES (?, ?, ?, 'CREATE_INSTANCE', 'QUEUED',
+                VALUES (?, ?, ?, ?, 'CREATE_INSTANCE', 'QUEUED',
                         jsonb_build_object('credentialCiphertext', ?), ?, ?, ?)
                 """,
                 operationId,
+                ownerId,
                 ownerId,
                 instanceId,
                 credentialCiphertext,
@@ -59,9 +60,11 @@ public class OperationRepository {
     public void enqueueInstanceOperation(
             UUID operationId,
             UUID ownerId,
+            UUID requesterId,
             UUID instanceId,
             String operationType,
             String credentialCiphertext,
+            UUID backupId,
             String previousInstanceState,
             String idempotencyKey,
             String requestHash,
@@ -69,19 +72,20 @@ public class OperationRepository {
         jdbcTemplate.update(
                 """
                 INSERT INTO operation
-                    (id, owner_id, instance_id, operation_type, state, payload,
+                    (id, owner_id, requester_id, instance_id, operation_type, state, payload,
                      previous_instance_state, idempotency_key, request_hash, correlation_id)
-                VALUES (?, ?, ?, ?, 'QUEUED',
-                        CASE WHEN CAST(? AS VARCHAR) IS NULL THEN '{}'::JSONB
-                             ELSE jsonb_build_object('credentialCiphertext', CAST(? AS VARCHAR)) END,
+                VALUES (?, ?, ?, ?, ?, 'QUEUED',
+                        jsonb_strip_nulls(jsonb_build_object(
+                            'credentialCiphertext', CAST(? AS VARCHAR), 'backupId', CAST(? AS VARCHAR))),
                         ?, ?, ?, ?)
                 """,
                 operationId,
                 ownerId,
+                requesterId,
                 instanceId,
                 operationType,
                 credentialCiphertext,
-                credentialCiphertext,
+                backupId,
                 previousInstanceState,
                 idempotencyKey,
                 requestHash,
@@ -111,7 +115,7 @@ public class OperationRepository {
                 """
                 SELECT id, state, request_hash
                 FROM operation
-                WHERE owner_id = ? AND idempotency_key = ?
+                WHERE requester_id = ? AND idempotency_key = ?
                 """,
                 resultSet -> resultSet.next()
                         ? Optional.of(new IdempotentOperation(
@@ -155,19 +159,21 @@ public class OperationRepository {
                            OR (state = 'RETRY_WAIT' AND next_attempt_at <= CURRENT_TIMESTAMP))
                       AND attempt_count < max_attempts
                       AND operation_type IN ('CREATE_INSTANCE', 'START_INSTANCE', 'STOP_INSTANCE',
-                                             'RESTART_INSTANCE', 'DELETE_INSTANCE')
+                                             'RESTART_INSTANCE', 'DELETE_INSTANCE', 'BACKUP', 'RESTORE')
                     ORDER BY created_at, id
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )
-                RETURNING id, instance_id, operation_type, previous_instance_state,
+                RETURNING id, owner_id, instance_id, operation_type, previous_instance_state,
                           lease_token, attempt_count, max_attempts,
                           payload ->> 'credentialCiphertext' AS credential_ciphertext,
-                          correlation_id
+                          correlation_id,
+                          NULLIF(payload ->> 'backupId', '')::UUID AS backup_id
                 """,
                 resultSet -> resultSet.next()
                         ? Optional.of(new OperationJob(
                                 resultSet.getObject("id", UUID.class),
+                                resultSet.getObject("owner_id", UUID.class),
                                 resultSet.getObject("instance_id", UUID.class),
                                 resultSet.getString("operation_type"),
                                 resultSet.getString("credential_ciphertext"),
@@ -175,7 +181,8 @@ public class OperationRepository {
                                 resultSet.getObject("lease_token", UUID.class),
                                 resultSet.getInt("attempt_count"),
                                 resultSet.getInt("max_attempts"),
-                                resultSet.getString("correlation_id")))
+                                resultSet.getString("correlation_id"),
+                                resultSet.getObject("backup_id", UUID.class)))
                         : Optional.empty(),
                 workerId,
                 leaseDuration.toSeconds());
@@ -255,7 +262,8 @@ public class OperationRepository {
                 FROM expired
                 WHERE o.id = expired.id
                 RETURNING o.id, o.instance_id, o.operation_type,
-                          o.previous_instance_state, o.state, o.correlation_id
+                          o.previous_instance_state, o.state, o.correlation_id,
+                          NULLIF(o.payload ->> 'backupId', '')::UUID AS backup_id
                 """,
                 (resultSet, rowNumber) -> new RecoveredOperation(
                         resultSet.getObject("id", UUID.class),
@@ -263,7 +271,8 @@ public class OperationRepository {
                         resultSet.getString("operation_type"),
                         resultSet.getString("previous_instance_state"),
                         resultSet.getString("state"),
-                        resultSet.getString("correlation_id")));
+                        resultSet.getString("correlation_id"),
+                        resultSet.getObject("backup_id", UUID.class)));
     }
 
     public Optional<OperationRecord> findByIdAndOwnerId(UUID operationId, UUID ownerId) {

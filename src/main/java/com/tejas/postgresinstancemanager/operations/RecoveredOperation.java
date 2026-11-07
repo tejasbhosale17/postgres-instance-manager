@@ -8,5 +8,6 @@ public record RecoveredOperation(
         String operationType,
         String previousInstanceState,
         String state,
-        String correlationId) {
+        String correlationId,
+        UUID backupId) {
 }

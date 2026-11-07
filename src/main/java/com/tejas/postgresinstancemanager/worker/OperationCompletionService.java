@@ -1,6 +1,7 @@
 package com.tejas.postgresinstancemanager.worker;
 
 import com.tejas.postgresinstancemanager.audit.AuditEventService;
+import com.tejas.postgresinstancemanager.backups.BackupRepository;
 import com.tejas.postgresinstancemanager.instances.InstanceRepository;
 import com.tejas.postgresinstancemanager.operations.OperationJob;
 import com.tejas.postgresinstancemanager.operations.OperationRepository;
@@ -20,16 +21,19 @@ public class OperationCompletionService {
     private final InstanceRepository instanceRepository;
     private final AuditEventService auditEventService;
     private final MeterRegistry meterRegistry;
+    private final BackupRepository backupRepository;
 
     public OperationCompletionService(
             OperationRepository operationRepository,
             InstanceRepository instanceRepository,
             AuditEventService auditEventService,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            BackupRepository backupRepository) {
         this.operationRepository = operationRepository;
         this.instanceRepository = instanceRepository;
         this.auditEventService = auditEventService;
         this.meterRegistry = meterRegistry;
+        this.backupRepository = backupRepository;
     }
 
     @Transactional
@@ -47,6 +51,13 @@ public class OperationCompletionService {
                     instanceRepository.markReadyAfterLifecycle(operation.instanceId(), result.hostPort());
             case "STOP_INSTANCE" -> instanceRepository.markStopped(operation.instanceId());
             case "DELETE_INSTANCE" -> instanceRepository.markDeleted(operation.instanceId());
+            case "BACKUP" -> {
+                backupRepository.markReady(
+                        result.backupId(), result.backupSizeBytes(), result.backupChecksumSha256());
+                instanceRepository.restoreState(operation.instanceId(), operation.previousInstanceState());
+            }
+            case "RESTORE" ->
+                    instanceRepository.restoreState(operation.instanceId(), operation.previousInstanceState());
             default -> throw new IllegalStateException(
                     "Unsupported operation type: " + operation.operationType());
         }
@@ -66,6 +77,9 @@ public class OperationCompletionService {
                     if (failed) {
                         instanceRepository.restoreState(
                                 operation.instanceId(), operation.previousInstanceState());
+                        if ("BACKUP".equals(operation.operationType()) && operation.backupId() != null) {
+                            backupRepository.markFailed(operation.backupId(), errorCode);
+                        }
                     }
                     String state = failed ? "FAILED" : "RETRY_WAIT";
                     recordOutcome(operation.id(), operation.instanceId(), operation.operationType(),
@@ -86,6 +100,9 @@ public class OperationCompletionService {
             if ("FAILED".equals(operation.state())) {
                 instanceRepository.restoreState(
                         operation.instanceId(), operation.previousInstanceState());
+                if ("BACKUP".equals(operation.operationType()) && operation.backupId() != null) {
+                    backupRepository.markFailed(operation.backupId(), "WORKER_LEASE_EXPIRED");
+                }
             }
         }
     }

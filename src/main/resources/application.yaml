@@ -49,3 +49,5 @@ app:
     lease-renewal-ms: ${WORKER_LEASE_RENEWAL_MS:30000}
     recovery-delay-ms: ${WORKER_RECOVERY_DELAY_MS:30000}
     reconcile-delay-ms: ${WORKER_RECONCILE_DELAY_MS:60000}
+  backup:
+    directory: ${BACKUP_DIRECTORY:./backups}

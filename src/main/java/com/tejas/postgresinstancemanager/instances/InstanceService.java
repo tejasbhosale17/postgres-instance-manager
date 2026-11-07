@@ -1,6 +1,9 @@
 package com.tejas.postgresinstancemanager.instances;
 
+import com.tejas.postgresinstancemanager.api.ResourceNotFoundException;
 import com.tejas.postgresinstancemanager.audit.AuditEventService;
+import com.tejas.postgresinstancemanager.backups.BackupRecord;
+import com.tejas.postgresinstancemanager.backups.BackupRepository;
 import com.tejas.postgresinstancemanager.operations.OperationRepository;
 import com.tejas.postgresinstancemanager.operations.IdempotentOperation;
 import com.tejas.postgresinstancemanager.security.CredentialEncryptionService;
@@ -26,18 +29,21 @@ public class InstanceService {
     private final CredentialEncryptionService credentialEncryptionService;
     private final AuditEventService auditEventService;
     private final MeterRegistry meterRegistry;
+    private final BackupRepository backupRepository;
 
     public InstanceService(
             InstanceRepository instanceRepository,
             OperationRepository operationRepository,
             CredentialEncryptionService credentialEncryptionService,
             AuditEventService auditEventService,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            BackupRepository backupRepository) {
         this.instanceRepository = instanceRepository;
         this.operationRepository = operationRepository;
         this.credentialEncryptionService = credentialEncryptionService;
         this.auditEventService = auditEventService;
         this.meterRegistry = meterRegistry;
+        this.backupRepository = backupRepository;
     }
 
     @Transactional
@@ -81,7 +87,7 @@ public class InstanceService {
             String idempotencyKey,
             String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "START_INSTANCE",
-                List.of("STOPPED"), "STARTING", idempotencyKey, correlationId);
+                List.of("STOPPED"), "STARTING", idempotencyKey, null, null, correlationId);
     }
 
     @Transactional
@@ -92,7 +98,7 @@ public class InstanceService {
             String idempotencyKey,
             String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "STOP_INSTANCE",
-                List.of("READY"), "STOPPING", idempotencyKey, correlationId);
+                List.of("READY"), "STOPPING", idempotencyKey, null, null, correlationId);
     }
 
     @Transactional
@@ -103,7 +109,7 @@ public class InstanceService {
             String idempotencyKey,
             String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "RESTART_INSTANCE",
-                List.of("READY", "STOPPED"), "RESTARTING", idempotencyKey, correlationId);
+                List.of("READY", "STOPPED"), "RESTARTING", idempotencyKey, null, null, correlationId);
     }
 
     @Transactional
@@ -114,7 +120,42 @@ public class InstanceService {
             String idempotencyKey,
             String correlationId) {
         return queueOperation(ownerId, administrator, instanceId, "DELETE_INSTANCE",
-                List.of("READY", "STOPPED", "FAILED"), "DELETING", idempotencyKey, correlationId);
+                List.of("READY", "STOPPED", "FAILED"), "DELETING",
+                idempotencyKey, null, null, correlationId);
+    }
+
+    @Transactional
+    public OperationAccepted requestBackup(
+            UUID requesterId,
+            boolean administrator,
+            UUID instanceId,
+            String idempotencyKey,
+            String correlationId) {
+        return queueOperation(requesterId, administrator, instanceId, "BACKUP",
+                List.of("READY"), "BACKING_UP", idempotencyKey, UUID.randomUUID(), null, correlationId);
+    }
+
+    @Transactional
+    public OperationAccepted requestRestore(
+            UUID requesterId,
+            boolean administrator,
+            UUID instanceId,
+            UUID backupId,
+            boolean confirmDataReplacement,
+            String idempotencyKey,
+            String correlationId) {
+        if (!confirmDataReplacement) {
+            throw new InvalidDataReplacementConfirmationException();
+        }
+        BackupRecord backup = (administrator
+                ? backupRepository.findById(backupId)
+                : backupRepository.findByIdAndOwnerId(backupId, requesterId))
+                .orElseThrow(ResourceNotFoundException::new);
+        if (!"READY".equals(backup.state())) {
+            throw new InstanceStateConflictException();
+        }
+        return queueOperation(requesterId, administrator, instanceId, "RESTORE",
+                List.of("READY"), "RESTORING", idempotencyKey, backupId, backupId.toString(), correlationId);
     }
 
     private OperationAccepted queueOperation(
@@ -125,32 +166,43 @@ public class InstanceService {
             List<String> allowedStates,
             String nextState,
             String idempotencyKey,
+            UUID backupId,
+            String requestIdentity,
             String correlationId) {
         validateIdempotencyKey(idempotencyKey);
-        String requestHash = credentialEncryptionService.fingerprint(descriptor(operationType, instanceId.toString()));
+        String requestHash = credentialEncryptionService.fingerprint(
+                descriptor(operationType, instanceId.toString(), requestIdentity));
         Optional<IdempotentOperation> existing = findExisting(ownerId, idempotencyKey, requestHash);
         if (existing.isPresent()) {
             return new OperationAccepted(existing.get().id(), existing.get().state());
         }
+        InstanceRecord instance = instanceRepository.findById(instanceId)
+                .filter(record -> administrator || ownerId.equals(record.ownerId()))
+                .orElseThrow(ResourceNotFoundException::new);
         UUID operationId = UUID.randomUUID();
         String previousInstanceState = instanceRepository.beginOperation(
                 instanceId, ownerId, administrator, allowedStates, nextState);
         String credentialCiphertext = switch (operationType) {
-            case "START_INSTANCE", "RESTART_INSTANCE" -> operationRepository
+            case "START_INSTANCE", "RESTART_INSTANCE", "BACKUP", "RESTORE" -> operationRepository
                     .findProvisioningCredential(instanceId)
                     .orElseThrow(InstanceStateConflictException::new);
             default -> null;
         };
         operationRepository.enqueueInstanceOperation(
                 operationId,
+                instance.ownerId(),
                 ownerId,
                 instanceId,
                 operationType,
                 credentialCiphertext,
+                backupId,
                 previousInstanceState,
                 idempotencyKey,
                 idempotencyKey == null ? null : requestHash,
                 correlationId);
+        if ("BACKUP".equals(operationType)) {
+            backupRepository.createPending(backupId, instance.ownerId(), instanceId, operationId);
+        }
         recordQueuedOperation(ownerId, operationId, operationType, instanceId, correlationId);
         return new OperationAccepted(operationId, "QUEUED");
     }

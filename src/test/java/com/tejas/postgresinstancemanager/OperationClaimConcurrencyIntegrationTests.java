@@ -72,10 +72,11 @@ class OperationClaimConcurrencyIntegrationTests {
                 ownerId);
         jdbcTemplate.update(
                 """
-                INSERT INTO operation (id, owner_id, instance_id, operation_type, state)
-                VALUES (?, ?, ?, 'CREATE_INSTANCE', 'QUEUED')
+                INSERT INTO operation (id, owner_id, requester_id, instance_id, operation_type, state)
+                VALUES (?, ?, ?, ?, 'CREATE_INSTANCE', 'QUEUED')
                 """,
                 operationId,
+                ownerId,
                 ownerId,
                 instanceId);
 

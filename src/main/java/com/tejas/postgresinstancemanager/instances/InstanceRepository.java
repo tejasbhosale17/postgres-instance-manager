@@ -116,7 +116,8 @@ public class InstanceRepository {
                 UPDATE managed_instance
                 SET state = 'FAILED', updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND state IN
-                    ('PROVISIONING', 'STARTING', 'STOPPING', 'RESTARTING', 'DELETING')
+                    ('PROVISIONING', 'STARTING', 'STOPPING', 'RESTARTING', 'DELETING',
+                     'BACKING_UP', 'RESTORING')
                 """,
                 instanceId);
     }
@@ -170,7 +171,8 @@ public class InstanceRepository {
                 UPDATE managed_instance
                 SET state = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND state IN
-                    ('PROVISIONING', 'STARTING', 'STOPPING', 'RESTARTING', 'DELETING')
+                    ('PROVISIONING', 'STARTING', 'STOPPING', 'RESTARTING', 'DELETING',
+                     'BACKING_UP', 'RESTORING')
                 """,
                 previousState,
                 instanceId);

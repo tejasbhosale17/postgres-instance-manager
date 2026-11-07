@@ -4,6 +4,9 @@ import com.tejas.postgresinstancemanager.worker.ManagedPostgresDocker;
 import com.tejas.postgresinstancemanager.worker.ManagedPostgresStatus;
 import com.tejas.postgresinstancemanager.worker.ProvisionedPostgres;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,6 +54,21 @@ final class FakeManagedPostgresDocker implements ManagedPostgresDocker {
         return instance == null
                 ? Optional.empty()
                 : Optional.of(new ManagedPostgresStatus(true, instance.hostPort()));
+    }
+
+    @Override
+    public void createLogicalBackup(UUID instanceId, String databasePassword, Path destination) {
+        requireInstance(instanceId);
+        try {
+            Files.write(destination, "test logical backup".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Could not write fake backup.", exception);
+        }
+    }
+
+    @Override
+    public void restoreLogicalBackup(UUID instanceId, String databasePassword, int hostPort, Path archive) {
+        requireInstance(instanceId);
     }
 
     private ProvisionedPostgres requireInstance(UUID instanceId) {

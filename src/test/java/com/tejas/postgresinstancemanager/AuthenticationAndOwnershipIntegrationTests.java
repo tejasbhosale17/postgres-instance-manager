@@ -151,20 +151,36 @@ class AuthenticationAndOwnershipIntegrationTests {
                 "READY");
         jdbcTemplate.update(
                 """
-                INSERT INTO operation (id, owner_id, instance_id, operation_type, state)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO operation (id, owner_id, requester_id, instance_id, operation_type, state)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 operationId,
+                owner,
                 owner,
                 instanceId,
                 "BACKUP",
                 "SUCCEEDED");
+        jdbcTemplate.update(
+                """
+                INSERT INTO backup_artifact
+                    (id, owner_id, source_instance_id, operation_id, state, size_bytes, checksum_sha256)
+                VALUES (?, ?, ?, ?, 'READY', 1, repeat('a', 64))
+                """,
+                UUID.randomUUID(),
+                owner,
+                instanceId,
+                operationId);
 
         mockMvc.perform(get("/api/instances/{id}", instanceId)
                         .header("Authorization", bearer(otherUserToken)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.detail").value("The requested resource was not found."));
         mockMvc.perform(get("/api/operations/{id}", operationId)
+                        .header("Authorization", bearer(otherUserToken)))
+                .andExpect(status().isNotFound());
+        UUID backupId = jdbcTemplate.queryForObject(
+                "SELECT id FROM backup_artifact WHERE operation_id = ?", UUID.class, operationId);
+        mockMvc.perform(get("/api/backups/{id}", backupId)
                         .header("Authorization", bearer(otherUserToken)))
                 .andExpect(status().isNotFound());
         mockMvc.perform(post("/api/instances/{id}/stop", instanceId)
@@ -243,12 +259,13 @@ class AuthenticationAndOwnershipIntegrationTests {
         jdbcTemplate.update(
                 """
                 INSERT INTO operation
-                    (id, owner_id, instance_id, operation_type, state, attempt_count, max_attempts,
+                    (id, owner_id, requester_id, instance_id, operation_type, state, attempt_count, max_attempts,
                      worker_id, lease_token, lease_until, previous_instance_state)
-                VALUES (?, ?, ?, 'BACKUP', 'RUNNING', 1, 3, 'stopped-worker',
+                VALUES (?, ?, ?, ?, 'BACKUP', 'RUNNING', 1, 3, 'stopped-worker',
                         gen_random_uuid(), CURRENT_TIMESTAMP - INTERVAL '1 minute', 'READY')
                 """,
                 operationId,
+                ownerId,
                 ownerId,
                 instanceId);
 
@@ -338,10 +355,11 @@ class AuthenticationAndOwnershipIntegrationTests {
         jdbcTemplate.update(
                 """
                 INSERT INTO operation
-                    (id, owner_id, instance_id, operation_type, state, correlation_id)
-                VALUES (?, ?, ?, 'BACKUP', 'SUCCEEDED', ?)
+                    (id, owner_id, requester_id, instance_id, operation_type, state, correlation_id)
+                VALUES (?, ?, ?, ?, 'BACKUP', 'SUCCEEDED', ?)
                 """,
                 operationId,
+                ownerId,
                 ownerId,
                 instanceId,
                 correlationId);

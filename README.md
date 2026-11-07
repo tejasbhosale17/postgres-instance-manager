@@ -73,7 +73,12 @@ Managed instances currently use the `postgres` database user. Lease and
 reconciliation schedules can be tuned with `WORKER_LEASE_DURATION_SECONDS`,
 `WORKER_LEASE_RENEWAL_MS`, `WORKER_RECOVERY_DELAY_MS`, and
 `WORKER_RECONCILE_DELAY_MS`; their defaults are 120 seconds, 30 seconds,
-30 seconds, and 60 seconds respectively.
+30 seconds, and 60 seconds respectively. Logical backup archives are written
+under `BACKUP_DIRECTORY` (default `./backups`, relative to the application
+working directory) and persist independently of instance deletion. Backups
+contain database contents in plaintext; restrict filesystem access and protect
+the directory with appropriate host storage controls. This milestone does not
+provide backup encryption, remote replication, or automatic retention.
 
 ## Authentication and API
 
@@ -99,6 +104,11 @@ Passwords are stored as PBKDF2 hashes. API responses omit password hashes.
 | `GET` | `/api/instances` | Authenticated; own records, or all for administrators |
 | `GET` | `/api/instances/{id}` | Owner or administrator |
 | `GET` | `/api/operations/{id}` | Owner or administrator |
+| `POST` | `/api/instances/{id}/backups` | Owning operator or administrator; queues a logical backup |
+| `POST` | `/api/instances/{id}/restore` | Owning operator or administrator; queues a confirmed database replacement |
+| `GET` | `/api/backups?limit=50` | Authenticated; own backups, or all for administrators |
+| `GET` | `/api/backups/{backupId}` | Backup owner or administrator |
+| `GET` | `/api/backups/{backupId}/content` | Backup owner or administrator; downloads the archive |
 | `GET` | `/api/activity?limit=50` | Authenticated; own audit and operation activity, or all for administrators |
 | `GET` | `/api/admin/users` | Administrator |
 | `PATCH` | `/api/admin/users/{userId}/role` | Administrator |
@@ -165,6 +175,20 @@ Invoke-RestMethod -Method Delete `
 Deletion runs asynchronously; poll the returned operation as above. The
 instance remains as a `DELETED` metadata record, and its name may be reused.
 Omitting the confirmation or setting it to `false` is rejected with HTTP 400.
+
+Create a backup with `POST /api/instances/{instanceId}/backups` while the
+instance is `READY`; poll its operation to completion, then list backups or
+retrieve the backup record to obtain its ID. Download the immutable custom
+format archive from `/api/backups/{backupId}/content`. Restore it to a
+`READY` managed instance with `POST /api/instances/{instanceId}/restore` and
+body `{"backupId":"<BACKUP-ID>","confirmDataReplacement":true}`. The worker
+validates the archive, restores it into a temporary database, verifies that
+the restored database accepts a query, then replaces the target's `postgres`
+database. The existing target remains intact if staging or verification fails.
+Restore is asynchronous and requires explicit confirmation because it replaces
+the target database contents. Backups remain available after deleting their
+source instance and are stored locally until manually removed; keep the
+configured directory backed up and apply an appropriate retention policy.
 
 The application binds to localhost by default. Docker access is privileged:
 anyone able to control the Docker daemon can control containers and host

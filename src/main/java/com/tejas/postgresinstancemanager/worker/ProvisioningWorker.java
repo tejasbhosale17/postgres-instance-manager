@@ -1,5 +1,11 @@
 package com.tejas.postgresinstancemanager.worker;
 
+import com.tejas.postgresinstancemanager.api.ResourceNotFoundException;
+import com.tejas.postgresinstancemanager.backups.BackupFileStore;
+import com.tejas.postgresinstancemanager.backups.BackupRecord;
+import com.tejas.postgresinstancemanager.backups.BackupRepository;
+import com.tejas.postgresinstancemanager.instances.InstanceRecord;
+import com.tejas.postgresinstancemanager.instances.InstanceRepository;
 import com.tejas.postgresinstancemanager.operations.OperationJob;
 import com.tejas.postgresinstancemanager.operations.OperationRepository;
 import com.tejas.postgresinstancemanager.security.CredentialEncryptionException;
@@ -31,6 +37,9 @@ public class ProvisioningWorker {
     private final CredentialEncryptionService credentialEncryptionService;
     private final ManagedPostgresDocker managedPostgresDocker;
     private final MeterRegistry meterRegistry;
+    private final BackupFileStore backupFileStore;
+    private final BackupRepository backupRepository;
+    private final InstanceRepository instanceRepository;
 
     public ProvisioningWorker(
             OperationRepository operationRepository,
@@ -38,6 +47,9 @@ public class ProvisioningWorker {
             CredentialEncryptionService credentialEncryptionService,
             ManagedPostgresDocker managedPostgresDocker,
             MeterRegistry meterRegistry,
+            BackupFileStore backupFileStore,
+            BackupRepository backupRepository,
+            InstanceRepository instanceRepository,
             @Value("${app.worker.lease-duration-seconds:120}") long leaseDurationSeconds) {
         if (leaseDurationSeconds < 30) {
             throw new IllegalStateException("Worker lease duration must be at least 30 seconds.");
@@ -47,6 +59,9 @@ public class ProvisioningWorker {
         this.credentialEncryptionService = credentialEncryptionService;
         this.managedPostgresDocker = managedPostgresDocker;
         this.meterRegistry = meterRegistry;
+        this.backupFileStore = backupFileStore;
+        this.backupRepository = backupRepository;
+        this.instanceRepository = instanceRepository;
         leaseDuration = Duration.ofSeconds(leaseDurationSeconds);
     }
 
@@ -99,6 +114,11 @@ public class ProvisioningWorker {
                     managedPostgresDocker.delete(operation.instanceId());
                     yield OperationResult.empty();
                 }
+                case "BACKUP" -> createBackup(operation);
+                case "RESTORE" -> {
+                    restoreBackup(operation);
+                    yield OperationResult.empty();
+                }
                 default -> throw new IllegalStateException(
                         "Unsupported operation type: " + operation.operationType());
             };
@@ -123,6 +143,35 @@ public class ProvisioningWorker {
                 operation.instanceId(),
                 password);
         return OperationResult.provisioned(postgres);
+    }
+
+    private OperationResult createBackup(OperationJob operation) {
+        if (operation.backupId() == null) {
+            throw new PostgresProvisioningException("BACKUP_ID_MISSING");
+        }
+        String password = decryptCredential(operation);
+        var result = backupFileStore.create(
+                operation.ownerId(), operation.backupId(), operation.instanceId(), password);
+        return OperationResult.backup(operation.backupId(), result);
+    }
+
+    private void restoreBackup(OperationJob operation) {
+        if (operation.backupId() == null) {
+            throw new PostgresProvisioningException("BACKUP_ID_MISSING");
+        }
+        BackupRecord backup = backupRepository.findById(operation.backupId())
+                .filter(record -> "READY".equals(record.state()))
+                .orElseThrow(() -> new PostgresProvisioningException("BACKUP_NOT_READY"));
+        InstanceRecord instance = instanceRepository.findById(operation.instanceId())
+                .orElseThrow(() -> new PostgresProvisioningException("RESTORE_TARGET_NOT_FOUND"));
+        if (instance.hostPort() == null) {
+            throw new PostgresProvisioningException("MANAGED_INSTANCE_PORT_UNAVAILABLE");
+        }
+        backupFileStore.restore(
+                backup,
+                operation.instanceId(),
+                decryptCredential(operation),
+                instance.hostPort());
     }
 
     private String decryptCredential(OperationJob operation) {

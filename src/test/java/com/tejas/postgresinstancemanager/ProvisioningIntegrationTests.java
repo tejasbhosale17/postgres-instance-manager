@@ -58,6 +58,7 @@ class ProvisioningIntegrationTests {
         registry.add("app.security.credential-encryption-key", () -> TEST_SIGNING_KEY);
         registry.add("app.bootstrap.admin-username", () -> "provisioning-admin");
         registry.add("app.bootstrap.admin-password", () -> ADMIN_PASSWORD);
+        registry.add("app.backup.directory", () -> "target/test-backups/provisioning");
     }
 
     @AfterAll
@@ -162,6 +163,97 @@ class ProvisioningIntegrationTests {
             verifyDockerLabels(instanceId);
             verifyDatabaseConnection(hostPort, databasePassword);
 
+            String backupIdempotencyKey = "backup-" + UUID.randomUUID();
+            String backupResponse = mockMvc.perform(post("/api/instances/{id}/backups", instanceId)
+                            .header("Authorization", bearer(token))
+                            .header("Idempotency-Key", backupIdempotencyKey))
+                    .andExpect(status().isAccepted())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+            UUID backupOperationId = UUID.fromString(
+                    objectMapper.readTree(backupResponse).get("operationId").asText());
+            mockMvc.perform(post("/api/instances/{id}/backups", instanceId)
+                            .header("Authorization", bearer(token))
+                            .header("Idempotency-Key", backupIdempotencyKey))
+                    .andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.operationId").value(backupOperationId.toString()));
+            assertThat(awaitOperation(token, backupOperationId).get("state").asText()).isEqualTo("SUCCEEDED");
+            UUID backupId = jdbcTemplate.queryForObject(
+                    "SELECT id FROM backup_artifact WHERE operation_id = ?",
+                    UUID.class,
+                    backupOperationId);
+            JsonNode backup = objectMapper.readTree(mockMvc.perform(get("/api/backups/{id}", backupId)
+                            .header("Authorization", bearer(token)))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString());
+            assertThat(backup.get("state").asText()).isEqualTo("READY");
+            assertThat(backup.get("sizeBytes").asLong()).isPositive();
+            assertThat(backup.get("checksumSha256").asText()).matches("[0-9a-f]{64}");
+            byte[] archive = mockMvc.perform(get("/api/backups/{id}/content", backupId)
+                            .header("Authorization", bearer(token)))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsByteArray();
+            assertThat(archive).hasSize((int) backup.get("sizeBytes").asLong());
+
+            setProbeValue(hostPort, databasePassword, 99);
+            mockMvc.perform(post("/api/instances/{id}/restore", instanceId)
+                            .header("Authorization", bearer(token))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of(
+                                    "backupId", backupId,
+                                    "confirmDataReplacement", false))))
+                    .andExpect(status().isBadRequest());
+            assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("READY");
+
+            jdbcTemplate.update(
+                    "UPDATE backup_artifact SET checksum_sha256 = ? WHERE id = ?",
+                    "0".repeat(64),
+                    backupId);
+            JsonNode failedRestore = objectMapper.readTree(mockMvc.perform(
+                            post("/api/instances/{id}/restore", instanceId)
+                                    .header("Authorization", bearer(token))
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(objectMapper.writeValueAsString(Map.of(
+                                            "backupId", backupId,
+                                            "confirmDataReplacement", true))))
+                    .andExpect(status().isAccepted())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString());
+            JsonNode failedRestoreOperation = awaitOperationState(
+                    token,
+                    UUID.fromString(failedRestore.get("operationId").asText()),
+                    "FAILED");
+            assertThat(failedRestoreOperation.get("errorCode").asText()).isEqualTo("BACKUP_CHECKSUM_MISMATCH");
+            assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("READY");
+            assertThat(readProbeValue(hostPort, databasePassword)).isEqualTo(99);
+
+            jdbcTemplate.update(
+                    "UPDATE backup_artifact SET checksum_sha256 = ? WHERE id = ?",
+                    backup.get("checksumSha256").asText(),
+                    backupId);
+            JsonNode restoreOperation = objectMapper.readTree(mockMvc.perform(
+                            post("/api/instances/{id}/restore", instanceId)
+                                    .header("Authorization", bearer(token))
+                                    .header("Idempotency-Key", "restore-" + UUID.randomUUID())
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(objectMapper.writeValueAsString(Map.of(
+                                            "backupId", backupId,
+                                            "confirmDataReplacement", true))))
+                    .andExpect(status().isAccepted())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString());
+            assertThat(awaitOperation(
+                    token, UUID.fromString(restoreOperation.get("operationId").asText()))
+                    .get("state").asText()).isEqualTo("SUCCEEDED");
+            verifyDatabaseConnection(getInstance(token, instanceId).get("hostPort").asInt(), databasePassword);
+
             String stopIdempotencyKey = "integration-stop-" + UUID.randomUUID();
             JsonNode stopOperation = requestLifecycle(
                     token, post("/api/instances/{id}/stop", instanceId), stopIdempotencyKey);
@@ -230,6 +322,10 @@ class ProvisioningIntegrationTests {
     }
 
     private JsonNode awaitOperation(String token, UUID operationId) throws Exception {
+        return awaitOperationState(token, operationId, "SUCCEEDED");
+    }
+
+    private JsonNode awaitOperationState(String token, UUID operationId, String expectedState) throws Exception {
         long deadline = System.nanoTime() + Duration.ofMinutes(4).toNanos();
         JsonNode operation = null;
         while (System.nanoTime() < deadline) {
@@ -241,11 +337,12 @@ class ProvisioningIntegrationTests {
                     .getContentAsString();
             operation = objectMapper.readTree(response);
             String state = operation.get("state").asText();
-            if ("SUCCEEDED".equals(state)) {
+            if (expectedState.equals(state)) {
                 return operation;
             }
-            if ("FAILED".equals(state)) {
-                fail("Provisioning failed with error code " + operation.get("errorCode").asText());
+            if ("SUCCEEDED".equals(state) || "FAILED".equals(state)) {
+                fail("Operation reached " + state + " instead of " + expectedState
+                        + " with error code " + operation.get("errorCode").asText());
             }
             Thread.sleep(500);
         }
@@ -322,6 +419,24 @@ class ProvisioningIntegrationTests {
                 assertThat(resultSet.next()).isTrue();
                 assertThat(resultSet.getInt(1)).isEqualTo(42);
             }
+        }
+    }
+
+    private void setProbeValue(int hostPort, String password, int value) throws Exception {
+        String url = "jdbc:postgresql://127.0.0.1:" + hostPort + "/postgres?connectTimeout=3";
+        try (Connection connection = DriverManager.getConnection(url, "postgres", password);
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE provisioning_probe SET value = " + value);
+        }
+    }
+
+    private int readProbeValue(int hostPort, String password) throws Exception {
+        String url = "jdbc:postgresql://127.0.0.1:" + hostPort + "/postgres?connectTimeout=3";
+        try (Connection connection = DriverManager.getConnection(url, "postgres", password);
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT value FROM provisioning_probe")) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getInt(1);
         }
     }
 

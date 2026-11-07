@@ -4,6 +4,7 @@ import java.util.UUID;
 
 public record OperationJob(
         UUID id,
+        UUID ownerId,
         UUID instanceId,
         String operationType,
         String credentialCiphertext,
@@ -11,5 +12,6 @@ public record OperationJob(
         UUID leaseToken,
         int attemptCount,
         int maxAttempts,
-        String correlationId) {
+        String correlationId,
+        UUID backupId) {
 }
