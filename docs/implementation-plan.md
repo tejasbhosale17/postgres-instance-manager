@@ -21,9 +21,9 @@ metadata database on localhost for trusted local development only.
 - [x] 3. Add instance lifecycle operations and explicit persistent-data deletion.
 - [x] 4. Add idempotency, concurrent claims, leases, bounded retries, recovery,
   and reconciliation.
-- [ ] 5. Add health, metrics, correlation IDs, audit events, and activity views.
-- [ ] 6. Add asynchronous logical backup and verified restore.
-- [ ] 7. Add CI, end-to-end and failure-injection scenarios, and reproducible
+- [x] 5. Add health, metrics, correlation IDs, audit events, and activity views.
+- [x] 6. Add asynchronous logical backup and verified restore.
+- [x] 7. Add CI, end-to-end and failure-injection scenarios, and reproducible
   measurements without fabricated results.
 - [ ] 8. Complete setup, API, security, operations, test, results, and limitation
   documentation and demo instructions.

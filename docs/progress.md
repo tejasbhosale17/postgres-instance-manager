@@ -138,3 +138,23 @@
   across a lost application-host directory are not provided.
 - **Next:** Milestone 7 — CI, end-to-end/failure-injection scenarios, and
   reproducible measurements.
+
+## Milestone 7 — CI, failure injection, and measurements
+
+- **Status:** Implemented and validated.
+- **Completed:** Added a GitHub Actions workflow that runs the full Java 21
+  Maven suite on pushes and pull requests and retains Surefire reports.
+  Strengthened the Docker-backed restore failure scenario to verify all three
+  bounded attempts fail with the expected checksum error while the instance
+  returns to READY and the original database value remains unchanged. Added a
+  PowerShell runner that records actual full-suite duration, environment
+  versions, and test counts as ignored JSON output; documented how to repeat
+  and compare measurements without treating them as performance guarantees.
+- **Validation:** `.\scripts\measure-test-suite.ps1` completed successfully:
+  15 tests across 6 suites, 0 failures, 0 errors, 0 skipped, in 92.870 seconds
+  with Java 21.0.10, Maven 3.9.15, and Docker Engine 29.9.2.
+- **Limitations:** Test timing depends on machine load and Docker image/resource
+  state; measurements must be compared only across reasonably similar
+  environments.
+- **Next:** Milestone 8 — complete setup, API, security, operations, test,
+  results, and limitation documentation and demo instructions.

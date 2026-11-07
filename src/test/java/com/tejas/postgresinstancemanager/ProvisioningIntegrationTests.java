@@ -230,6 +230,7 @@ class ProvisioningIntegrationTests {
                     UUID.fromString(failedRestore.get("operationId").asText()),
                     "FAILED");
             assertThat(failedRestoreOperation.get("errorCode").asText()).isEqualTo("BACKUP_CHECKSUM_MISMATCH");
+            assertThat(failedRestoreOperation.get("attemptCount").asInt()).isEqualTo(3);
             assertThat(getInstance(token, instanceId).get("state").asText()).isEqualTo("READY");
             assertThat(readProbeValue(hostPort, databasePassword)).isEqualTo(99);
 
