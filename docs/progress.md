@@ -158,3 +158,23 @@
   environments.
 - **Next:** Milestone 8 — complete setup, API, security, operations, test,
   results, and limitation documentation and demo instructions.
+
+## Milestone 8 — Documentation and demo
+
+- **Status:** Implemented and validated.
+- **Completed:** Expanded the README with a role/access matrix and entry points
+  to test and demo documentation. Added operational guidance for configuration,
+  startup/shutdown, health, worker recovery, backup retention, key management,
+  security boundaries, and disaster recovery. Added a local end-to-end
+  PowerShell walkthrough for provisioning, writing/querying data, backing up,
+  restoring, verifying the restored value, and optionally confirming deletion.
+  The measured test-suite result and limitations are documented in
+  `docs/measurements.md`.
+- **Validation:** Cross-checked documented API roles, configuration defaults,
+  operation status fields, backup behavior, and Docker/metadata persistence
+  against the implementation. All relative documentation links resolve and
+  `git diff --check` passes.
+- **Limitations:** Documentation describes the current localhost development
+  deployment; production readiness, TLS, per-instance PostgreSQL roles,
+  automated archive retention, and key rotation remain out of scope.
+- **Next:** Project milestones 0–8 complete.

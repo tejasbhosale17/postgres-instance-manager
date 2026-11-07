@@ -36,6 +36,10 @@ requires a running Docker engine. Alternatively, set `TEST_DATABASE_URL`,
 `TEST_DATABASE_USERNAME`, and `TEST_DATABASE_PASSWORD` to use an isolated,
 disposable PostgreSQL database for tests that do not require Docker. The tests
 apply Flyway migrations and create test users and records in that database.
+Run `.\scripts\measure-test-suite.ps1` to execute a clean test run and save
+measured timing and test counts under `target/measurements/`. See
+[reproducible measurements](docs/measurements.md) for interpretation and
+environment requirements.
 
 Metadata is stored in the Compose-managed `metadata-data` volume. The
 application and metadata database bind to localhost by default. Each managed
@@ -69,6 +73,19 @@ internet-facing production use. Never commit `.env` or use real credentials in
 
 Application roles (administrator, operator, viewer) govern use of this platform
 and are distinct from PostgreSQL roles and privileges inside managed databases.
+The access model is:
+
+| Role | Read API | Manage instances/backups | Admin users and Actuator |
+|---|---|---|---|
+| `VIEWER` | Own data | No | No |
+| `OPERATOR` | Own data | Own instances | No |
+| `ADMINISTRATOR` | Platform-wide data | Any instance | Yes |
+
+Registration creates only `VIEWER` accounts. An administrator can promote a
+different account with `PATCH /api/admin/users/{userId}/role` and body
+`{"role":"OPERATOR"}`; administrators cannot change their own role or demote
+the final administrator. Authenticated `GET` APIs are available to all three
+roles, but expose only owner-scoped data unless the caller is an administrator.
 Managed instances currently use the `postgres` database user. Lease and
 reconciliation schedules can be tuned with `WORKER_LEASE_DURATION_SECONDS`,
 `WORKER_LEASE_RENEWAL_MS`, `WORKER_RECOVERY_DELAY_MS`, and
@@ -194,4 +211,6 @@ The application binds to localhost by default. Docker access is privileged:
 anyone able to control the Docker daemon can control containers and host
 resources. This initial deployment is intended only for a trusted local
 development environment, not for untrusted users or internet-facing production
-use.
+use. For deployment, backup recovery, key handling, and incident checks, see
+[operations and security](docs/operations.md). A complete local walkthrough is
+available in the [end-to-end demo](docs/demo.md).

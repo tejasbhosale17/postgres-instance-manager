@@ -25,5 +25,5 @@ metadata database on localhost for trusted local development only.
 - [x] 6. Add asynchronous logical backup and verified restore.
 - [x] 7. Add CI, end-to-end and failure-injection scenarios, and reproducible
   measurements without fabricated results.
-- [ ] 8. Complete setup, API, security, operations, test, results, and limitation
+- [x] 8. Complete setup, API, security, operations, test, results, and limitation
   documentation and demo instructions.
